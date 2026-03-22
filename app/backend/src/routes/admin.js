@@ -13,8 +13,8 @@ adminRouter.get("/backup", (_req, res) => {
 
 adminRouter.get("/network", (_req, res) => {
   res.json({
-    subnet: "10.10.40.0/24",
-    gateway: "10.10.40.1",
+    subnet: "10.10.60.0/24",
+    gateway: "10.10.60.1",
     resolver: "internal"
   });
 });
