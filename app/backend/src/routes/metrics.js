@@ -133,19 +133,29 @@ for (let i = 0; i < MAX_POINTS; i++) {
 
 setInterval(collectMetrics, 2 * 60 * 1000);
 
+function seriesStat(arr) {
+  if (!arr.length) return { current: null, previous: null, min: null, avg: null, max: null, trend: "flat" };
+  const current = arr[arr.length - 1];
+  const previous = arr.length > 1 ? arr[arr.length - 2] : null;
+  const min = Math.min(...arr);
+  const max = Math.max(...arr);
+  const avg = Math.round(arr.reduce((s, v) => s + v, 0) / arr.length);
+  const trend = previous == null || current === previous ? "flat" : current > previous ? "up" : "down";
+  return { current, previous, min, avg, max, trend };
+}
+
 metricsRouter.get("/", (_req, res) => {
   res.json({
-    cpu: history.cpu,
-    memory: history.memory,
+    cpu:     history.cpu,
+    memory:  history.memory,
     storage: history.storage,
     network: history.network,
     collectedAt: lastCollectedAt,
-    latest: {
-      cpu: history.cpu[history.cpu.length - 1] ?? null,
-      memory: history.memory[history.memory.length - 1] ?? null,
-      storage: history.storage[history.storage.length - 1] ?? null,
-      network: history.network[history.network.length - 1] ?? null,
-      timestamp: lastCollectedAt,
+    stats: {
+      cpu:     seriesStat(history.cpu),
+      memory:  seriesStat(history.memory),
+      storage: seriesStat(history.storage),
+      network: seriesStat(history.network),
     },
   });
 });

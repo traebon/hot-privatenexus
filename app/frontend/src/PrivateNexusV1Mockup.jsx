@@ -348,7 +348,7 @@ export default function PrivateNexusV1Mockup() {
   const [appCategory, setAppCategory] = useState("All");
   const [backupData, setBackupData] = useState(null);
   const [networkData, setNetworkData] = useState(null);
-  const [metricsData, setMetricsData] = useState({ cpu: [], memory: [], storage: [], network: [] });
+  const [metricsData, setMetricsData] = useState({ cpu: [], memory: [], storage: [], network: [], stats: null, collectedAt: null });
   const [metricsError, setMetricsError] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -475,6 +475,18 @@ export default function PrivateNexusV1Mockup() {
     storage: metricsData.storage.length ? metricsData.storage : [68, 68, 69, 69, 70, 70, 71, 71, 71, 71],
     network: metricsData.network.length ? metricsData.network : [320, 410, 560, 620, 710, 842, 690, 760, 720, 680],
   };
+
+  // Backend-computed stats; fall back to null (frontend will compute from series)
+  const metricsStats = metricsData.stats || null;
+
+  // trend arrow + colour — for CPU/mem/storage: up is bad (red), down is good (green)
+  //                        for network: up is neutral (blue)
+  function trendIndicator(key, trend) {
+    if (!trend || trend === "flat") return { arrow: "→", cls: "text-neutral-500" };
+    const isNetwork = key === "network";
+    if (trend === "up")   return { arrow: "↑", cls: isNetwork ? "text-blue-400" : "text-rose-400" };
+    return                       { arrow: "↓", cls: isNetwork ? "text-neutral-400" : "text-emerald-400" };
+  }
 
   const xLabels = ["-45m", "-35m", "-25m", "-15m", "now"];
 
@@ -798,16 +810,24 @@ export default function PrivateNexusV1Mockup() {
           {/* Ops — GraphCards + service CPU/RAM cards */}
           {activeBoard === "Ops" && (
             <div className="space-y-4">
+              {metricsData.collectedAt && (
+                <div className="text-right text-[11px] text-neutral-600">
+                  Last updated: {new Date(metricsData.collectedAt).toLocaleTimeString()}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4">
                 {[
-                  { title: "CPU Load",            value: graphSeries.cpu[graphSeries.cpu.length - 1] || 0,         unit: "%",    colorClass: "border-cyan-400/20 from-cyan-500/10 to-blue-500/5",       stroke: "#22d3ee", data: graphSeries.cpu,     maxValue: 100,  yMarks: ["100%","75%","50%","25%","0%"], progressWidth: `${graphSeries.cpu[graphSeries.cpu.length - 1] || 0}%` },
-                  { title: "Memory Pressure",     value: graphSeries.memory[graphSeries.memory.length - 1] || 0,   unit: "%",    colorClass: "border-purple-400/20 from-purple-500/10 to-indigo-500/5",  stroke: "#a855f7", data: graphSeries.memory,  maxValue: 100,  yMarks: ["100%","75%","50%","25%","0%"], progressWidth: `${graphSeries.memory[graphSeries.memory.length - 1] || 0}%` },
-                  { title: "Storage Utilisation", value: graphSeries.storage[graphSeries.storage.length - 1] || 0, unit: "%",    colorClass: "border-emerald-400/20 from-emerald-500/10 to-green-500/5", stroke: "#34d399", data: graphSeries.storage, maxValue: 100,  yMarks: ["100%","75%","50%","25%","0%"], progressWidth: `${graphSeries.storage[graphSeries.storage.length - 1] || 0}%` },
-                  { title: "Network Throughput",  value: graphSeries.network[graphSeries.network.length - 1] || 0, unit: " Mbps",colorClass: "border-amber-400/20 from-amber-500/10 to-orange-500/5",   stroke: "#f59e0b", data: graphSeries.network, maxValue: 1000, yMarks: ["1Gb","750M","500M","250M","0"],  progressWidth: `${((graphSeries.network[graphSeries.network.length - 1] || 0) / 1000 * 100).toFixed(1)}%` },
-                ].map(({ title, value, unit, colorClass, stroke, data, maxValue, yMarks, progressWidth }) => {
-                  const minValue = Math.min(...data);
-                  const maxSeen = Math.max(...data);
-                  const avgValue = Math.round(data.reduce((sum, point) => sum + point, 0) / data.length);
+                  { key: "cpu",     title: "CPU Load",            value: graphSeries.cpu[graphSeries.cpu.length - 1] || 0,         unit: "%",    colorClass: "border-cyan-400/20 from-cyan-500/10 to-blue-500/5",       stroke: "#22d3ee", data: graphSeries.cpu,     maxValue: 100,  yMarks: ["100%","75%","50%","25%","0%"], progressWidth: `${graphSeries.cpu[graphSeries.cpu.length - 1] || 0}%` },
+                  { key: "memory",  title: "Memory Pressure",     value: graphSeries.memory[graphSeries.memory.length - 1] || 0,   unit: "%",    colorClass: "border-purple-400/20 from-purple-500/10 to-indigo-500/5",  stroke: "#a855f7", data: graphSeries.memory,  maxValue: 100,  yMarks: ["100%","75%","50%","25%","0%"], progressWidth: `${graphSeries.memory[graphSeries.memory.length - 1] || 0}%` },
+                  { key: "storage", title: "Storage Utilisation", value: graphSeries.storage[graphSeries.storage.length - 1] || 0, unit: "%",    colorClass: "border-emerald-400/20 from-emerald-500/10 to-green-500/5", stroke: "#34d399", data: graphSeries.storage, maxValue: 100,  yMarks: ["100%","75%","50%","25%","0%"], progressWidth: `${graphSeries.storage[graphSeries.storage.length - 1] || 0}%` },
+                  { key: "network", title: "Network Throughput",  value: graphSeries.network[graphSeries.network.length - 1] || 0, unit: " Mbps",colorClass: "border-amber-400/20 from-amber-500/10 to-orange-500/5",   stroke: "#f59e0b", data: graphSeries.network, maxValue: 1000, yMarks: ["1Gb","750M","500M","250M","0"],  progressWidth: `${((graphSeries.network[graphSeries.network.length - 1] || 0) / 1000 * 100).toFixed(1)}%` },
+                ].map(({ key, title, value, unit, colorClass, stroke, data, maxValue, yMarks, progressWidth }) => {
+                  // Prefer backend-computed stats; fall back to frontend calculation
+                  const bStats = metricsStats?.[key];
+                  const minValue = bStats?.min  ?? Math.min(...data);
+                  const maxSeen  = bStats?.max  ?? Math.max(...data);
+                  const avgValue = bStats?.avg  ?? Math.round(data.reduce((sum, point) => sum + point, 0) / data.length);
+                  const trend = trendIndicator(key, bStats?.trend);
                   const paddedMin = Math.max(0, minValue - (maxSeen - minValue || 5) * 0.25);
                   const paddedMax = Math.min(maxValue, maxSeen + (maxSeen - minValue || 5) * 0.25);
                   const paddedRange = paddedMax - paddedMin || 1;
@@ -815,7 +835,10 @@ export default function PrivateNexusV1Mockup() {
                     <div key={title} className={`rounded-2xl border ${colorClass} bg-gradient-to-br p-4`}>
                       <div className="mb-2 flex items-center justify-between">
                         <div className="font-semibold">{title}</div>
-                        <div className="text-xs text-neutral-300">{value}{unit}</div>
+                        <div className="flex items-center gap-1.5 text-xs text-neutral-300">
+                          <span className={trend.cls}>{trend.arrow}</span>
+                          <span>{value}{unit}</span>
+                        </div>
                       </div>
                       <div className="mb-3 h-2 rounded-full bg-neutral-800">
                         <div className="h-2 rounded-full" style={{ width: progressWidth, backgroundColor: stroke }} />
