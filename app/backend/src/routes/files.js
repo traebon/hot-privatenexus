@@ -3,6 +3,7 @@ import path from "path";
 import { Router } from "express";
 import { getRegisteredFileById, listRegisteredFiles } from "../filesRegistry.js";
 import { readDraft, writeDraft } from "../drafts.js";
+import { backupLiveFile } from "../fileBackups.js";
 
 export const filesRouter = Router();
 
@@ -83,5 +84,47 @@ filesRouter.post("/draft", (req, res) => {
   } catch (err) {
     console.error(`Failed to write draft for: ${id}`, err);
     res.status(500).json({ ok: false, error: "Failed to save draft" });
+  }
+});
+
+// POST /api/files/write — overwrite live file (backup-on-write, whitelist only)
+filesRouter.post("/write", (req, res) => {
+  const { id, content, source } = req.body || {};
+
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  if (typeof content !== "string") {
+    return res.status(400).json({ ok: false, error: "Write content must be a string" });
+  }
+
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+  if (!file.editable) {
+    return res.status(403).json({ ok: false, error: "File is not editable" });
+  }
+
+  try {
+    const originalContent = fs.existsSync(file.path)
+      ? fs.readFileSync(file.path, "utf8")
+      : "";
+
+    const backup = backupLiveFile(id, file.path, originalContent);
+
+    fs.writeFileSync(file.path, content, "utf8");
+
+    const stats = fs.statSync(file.path);
+    res.json({
+      ok: true,
+      id,
+      source: source || "editor",
+      file: { path: file.path, modifiedAt: stats.mtime.toISOString(), size: stats.size },
+      backup,
+    });
+  } catch (err) {
+    console.error(`Failed to write live file: ${id}`, err);
+    res.status(500).json({ ok: false, error: "Failed to save live file" });
   }
 });
