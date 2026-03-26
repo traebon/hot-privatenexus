@@ -117,11 +117,14 @@ function sampleNetworkMbps() {
   return Math.max(0, Math.round(mbps));
 }
 
+let lastCollectedAt = null;
+
 function collectMetrics() {
   pushPoint("cpu", sampleCpuPercent());
   pushPoint("memory", sampleMemoryPercent());
   pushPoint("storage", sampleStoragePercent());
   pushPoint("network", sampleNetworkMbps());
+  lastCollectedAt = new Date().toISOString();
 }
 
 for (let i = 0; i < MAX_POINTS; i++) {
@@ -136,5 +139,13 @@ metricsRouter.get("/", (_req, res) => {
     memory: history.memory,
     storage: history.storage,
     network: history.network,
+    collectedAt: lastCollectedAt,
+    latest: {
+      cpu: history.cpu[history.cpu.length - 1] ?? null,
+      memory: history.memory[history.memory.length - 1] ?? null,
+      storage: history.storage[history.storage.length - 1] ?? null,
+      network: history.network[history.network.length - 1] ?? null,
+      timestamp: lastCollectedAt,
+    },
   });
 });

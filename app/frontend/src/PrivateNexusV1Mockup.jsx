@@ -104,6 +104,8 @@ export default function PrivateNexusV1Mockup() {
   const [backupData, setBackupData] = useState(null);
   const [networkData, setNetworkData] = useState(null);
   const [metricsData, setMetricsData] = useState({ cpu: [], memory: [], storage: [], network: [] });
+  const [metricsError, setMetricsError] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   // -------------------------------------------------------------------------
   // API — backup and network come from the backend; app/service data is static
@@ -123,17 +125,24 @@ export default function PrivateNexusV1Mockup() {
   useEffect(() => {
     let mounted = true;
 
-    const loadMetrics = () => {
-      fetch(`${API_BASE}/api/metrics`)
-        .then((res) => res.json())
-        .then((data) => {
-          if (mounted) setMetricsData(data);
-        })
-        .catch((err) => console.error("Failed to load metrics", err));
+    const loadMetrics = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/metrics`);
+        const data = await res.json();
+        if (mounted) {
+          setMetricsData(data);
+          setMetricsError(false);
+        }
+      } catch (err) {
+        console.error("Failed to load metrics", err);
+        if (mounted) setMetricsError(true);
+      } finally {
+        if (mounted) setLoading(false);
+      }
     };
 
     loadMetrics();
-    const interval = setInterval(loadMetrics, 120000);
+    const interval = setInterval(loadMetrics, 180000);
 
     return () => {
       mounted = false;
@@ -468,8 +477,25 @@ export default function PrivateNexusV1Mockup() {
   // -------------------------------------------------------------------------
   // Render
   // -------------------------------------------------------------------------
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-neutral-950 to-neutral-900 text-white">
+        <div className="text-center">
+          <div className="mb-3 text-2xl font-bold tracking-wide text-cyan-400">PrivateNexus</div>
+          <div className="text-sm text-neutral-500">Connecting to backend…</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-950 to-neutral-900 p-6 text-white">
+      {metricsError && (
+        <div className="mx-auto mb-4 max-w-7xl rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-300">
+          Backend unreachable — graphs showing last cached readings.
+        </div>
+      )}
+
       <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[260px_1fr]">
 
         {/* Sidebar — border and gradient tint track the active board */}
