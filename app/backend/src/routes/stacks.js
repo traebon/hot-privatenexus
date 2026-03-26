@@ -1,12 +1,94 @@
 import { Router } from "express";
+import Docker from "dockerode";
 
 export const stacksRouter = Router();
 
-stacksRouter.get("/", (_req, res) => {
-  res.json([
-    { name: "Nextcloud", status: "Running" },
-    { name: "Immich", status: "Degraded" },
-    { name: "Notesnook", status: "Running" },
-    { name: "Paperless", status: "Needs Review" }
-  ]);
+const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+
+function formatContainer(c) {
+  const labels = c.Labels || {};
+  return {
+    id: c.Id.slice(0, 12),
+    fullId: c.Id,
+    name: (c.Names?.[0] || "").replace(/^\//, ""),
+    image: c.Image,
+    status: c.Status,
+    state: c.State,
+    created: c.Created,
+    ports: (c.Ports || [])
+      .filter((p) => p.PublicPort)
+      .map((p) => `${p.PublicPort}:${p.PrivatePort}/${p.Type}`),
+    project: labels["com.docker.compose.project"] || null,
+    service: labels["com.docker.compose.service"] || null,
+    composeFile: labels["com.docker.compose.project.config_files"] || null,
+  };
+}
+
+// GET /api/stacks — all containers grouped by compose project
+stacksRouter.get("/", async (_req, res) => {
+  try {
+    const raw = await docker.listContainers({ all: true });
+    const containers = raw.map(formatContainer);
+
+    const projectMap = {};
+    for (const c of containers) {
+      const key = c.project || "__standalone__";
+      if (!projectMap[key]) projectMap[key] = { project: key, containers: [] };
+      projectMap[key].containers.push(c);
+    }
+
+    const projects = Object.values(projectMap).map((p) => ({
+      ...p,
+      state: p.containers.every((c) => c.state === "running")
+        ? "running"
+        : p.containers.some((c) => c.state === "running")
+        ? "partial"
+        : "stopped",
+    }));
+
+    res.json({ projects, total: containers.length });
+  } catch (err) {
+    console.error("Docker listContainers failed:", err.message);
+    res.status(500).json({ error: "Docker unavailable", detail: err.message });
+  }
+});
+
+// GET /api/stacks/:id — single container inspect
+stacksRouter.get("/:id", async (req, res) => {
+  try {
+    const container = docker.getContainer(req.params.id);
+    const info = await container.inspect();
+    res.json({
+      id: info.Id.slice(0, 12),
+      name: info.Name.replace(/^\//, ""),
+      image: info.Config?.Image,
+      state: info.State,
+      created: info.Created,
+      mounts: info.Mounts?.map((m) => ({ src: m.Source, dst: m.Destination, mode: m.Mode })),
+      ports: info.NetworkSettings?.Ports,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/stacks/:id/logs — last N lines
+stacksRouter.get("/:id/logs", async (req, res) => {
+  const tail = Math.min(Number(req.query.tail) || 100, 500);
+  try {
+    const container = docker.getContainer(req.params.id);
+    const stream = await container.logs({ stdout: true, stderr: true, tail, timestamps: true });
+    const lines = [];
+    let buf = Buffer.isBuffer(stream) ? stream : Buffer.from(stream);
+    let offset = 0;
+    while (offset + 8 <= buf.length) {
+      const size = buf.readUInt32BE(offset + 4);
+      if (offset + 8 + size > buf.length) break;
+      lines.push(buf.slice(offset + 8, offset + 8 + size).toString("utf8").trimEnd());
+      offset += 8 + size;
+    }
+    res.json({ id: req.params.id, tail, lines });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });

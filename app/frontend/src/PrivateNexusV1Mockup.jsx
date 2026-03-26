@@ -4,89 +4,199 @@ export default function PrivateNexusV1Mockup() {
   const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:3001";
 
   // -------------------------------------------------------------------------
-  // Inner component — fully self-contained, no outer state dependencies
+  // Inner component — live Docker data, fully self-contained
   // -------------------------------------------------------------------------
   function StacksBoard() {
-    const [panel, setPanel] = useState(null);
+    const [projects, setProjects] = useState([]);
+    const [total, setTotal] = useState(0);
+    const [stacksError, setStacksError] = useState(false);
+    const [actionPending, setActionPending] = useState(null); // "containerId:action"
+    const [logsTarget, setLogsTarget] = useState(null);       // { id, name }
+    const [logsLines, setLogsLines] = useState([]);
+    const [logsLoading, setLogsLoading] = useState(false);
 
-    const items = [
-      { key: "create",    title: "Create",    desc: "Scaffold new stack",           colorClass: "hover:border-amber-400/30" },
-      { key: "import",    title: "Import",    desc: "Parse compose",                colorClass: "hover:border-cyan-400/30" },
-      { key: "lifecycle", title: "Lifecycle", desc: "Running / Drafts / Updates",   colorClass: "hover:border-emerald-400/30" },
-      { key: "insight",   title: "Insights",  desc: "Health / History / Recovery",  colorClass: "hover:border-purple-400/30" },
-      { key: "files",     title: "Files",     desc: "Dockerfiles, docs, configs",   colorClass: "hover:border-rose-400/30" },
-    ];
-
-    const panelContent = {
-      create:    ["Create Stack", "Template Library", "Clone Stack"],
-      import:    ["Paste Compose", "Security Review", "Generate Skeleton"],
-      lifecycle: ["Running Stacks", "Draft Stacks", "Update Queue", "Review Queue"],
-      insight:   ["Recent Changes", "Stack Health", "Deployment History", "Recovery Tools"],
-      files:     ["Edit Dockerfile", "Edit Compose", "Edit App Docs", "Edit Config Files"],
+    const stateStyle = {
+      running: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+      exited:  "bg-neutral-700/60 text-neutral-400 border-neutral-600/30",
+      paused:  "bg-amber-500/20 text-amber-300 border-amber-500/30",
+      partial: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+      stopped: "bg-neutral-700/60 text-neutral-400 border-neutral-600/30",
     };
 
-    const stackCards = [
-      { name: "Nextcloud",  details: "docker-compose.yml · Dockerfile · Caddyfile",       docs: "README.md · deployment-notes.md" },
-      { name: "Immich",     details: "docker-compose.yml · worker.env · reverse-proxy.conf", docs: "README.md · gpu-notes.md" },
-      { name: "Notesnook", details: "docker-compose.yml · secrets.env",                   docs: "README.md · backup-policy.md" },
-      { name: "Paperless",  details: "docker-compose.yml · import-review.yml",            docs: "README.md · recovery-notes.md" },
-    ];
+    const loadStacks = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/stacks`);
+        const data = await res.json();
+        setProjects(data.projects || []);
+        setTotal(data.total || 0);
+        setStacksError(false);
+      } catch {
+        setStacksError(true);
+      }
+    };
+
+    useEffect(() => {
+      loadStacks();
+      const interval = setInterval(loadStacks, 15000);
+      return () => clearInterval(interval);
+    }, []);
+
+    const runAction = async (containerId, action) => {
+      const key = `${containerId}:${action}`;
+      setActionPending(key);
+      try {
+        await fetch(`${API_BASE}/api/actions/run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, target: containerId }),
+        });
+        await loadStacks();
+      } finally {
+        setActionPending(null);
+      }
+    };
+
+    const openLogs = async (container) => {
+      setLogsTarget(container);
+      setLogsLines([]);
+      setLogsLoading(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/stacks/${container.id}/logs?tail=100`);
+        const data = await res.json();
+        setLogsLines(data.lines || []);
+      } catch {
+        setLogsLines(["Failed to fetch logs."]);
+      } finally {
+        setLogsLoading(false);
+      }
+    };
+
+    const runningCount = projects.reduce((n, p) => n + p.containers.filter((c) => c.state === "running").length, 0);
 
     return (
       <div className="space-y-4">
+        {/* Header */}
         <div className="rounded-2xl border border-amber-400/20 bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-yellow-500/10 p-4">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-xs uppercase tracking-wider text-amber-300/80">Build Bay</div>
+              <div className="text-xs uppercase tracking-wider text-amber-300/80">Live Docker</div>
               <div className="text-lg font-semibold">Stack Control Center</div>
             </div>
-            <div className="flex gap-2">
-              <span className="rounded-full bg-emerald-500/20 px-2 py-1 text-xs text-emerald-300">8 running</span>
-              <span className="rounded-full bg-blue-500/20 px-2 py-1 text-xs text-blue-300">3 drafts</span>
-              <span className="rounded-full bg-amber-500/20 px-2 py-1 text-xs text-amber-300">2 updates</span>
+            <div className="flex items-center gap-2">
+              <span className="rounded-full bg-emerald-500/20 px-2 py-1 text-xs text-emerald-300">{runningCount} running</span>
+              <span className="rounded-full bg-neutral-700/60 px-2 py-1 text-xs text-neutral-400">{total} total</span>
+              <button
+                onClick={loadStacks}
+                className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-1 text-xs text-amber-300 hover:bg-amber-500/20"
+              >
+                Refresh
+              </button>
             </div>
           </div>
+          {stacksError && (
+            <div className="mt-2 text-xs text-rose-400">Docker socket unavailable — cannot list containers.</div>
+          )}
         </div>
 
-        <div className="flex gap-3">
-          {items.map((item) => (
-            <div
-              key={item.key}
-              onClick={() => setPanel(panel === item.key ? null : item.key)}
-              className={["flex-1 cursor-pointer rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4 transition", item.colorClass].join(" ")}
-            >
-              <div className="font-semibold">{item.title}</div>
-              <div className="text-xs text-neutral-400">{item.desc}</div>
-            </div>
-          ))}
-        </div>
-
-        {panel && (
-          <div className="grid grid-cols-4 gap-4 rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
-            {panelContent[panel].map((entry) => (
-              <div key={entry} className="rounded-xl border border-neutral-800 bg-neutral-800/80 p-3 text-sm">
-                {entry}
-              </div>
-            ))}
+        {/* Projects */}
+        {projects.length === 0 && !stacksError && (
+          <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-6 text-center text-sm text-neutral-500">
+            No containers found on this host.
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-4">
-          {stackCards.map((stack) => (
-            <div key={stack.name} className="rounded-2xl border border-amber-400/20 bg-neutral-900/80 p-4">
-              <div className="font-semibold">{stack.name}</div>
-              <div className="mt-1 text-xs text-neutral-400">{stack.details}</div>
-              <div className="mt-1 text-xs text-neutral-500">{stack.docs}</div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {["Edit Dockerfile", "Edit Compose", "Edit Docs", "Open Config"].map((action) => (
-                  <div key={action} className="rounded-lg border border-neutral-700 bg-neutral-800/80 px-2 py-1 text-[10px] text-neutral-300">
-                    {action}
+        {projects.map((p) => (
+          <div key={p.project} className="rounded-2xl border border-amber-400/20 bg-neutral-900/80 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold">{p.project === "__standalone__" ? "Standalone" : p.project}</span>
+                <span className={["rounded-full border px-2 py-0.5 text-[10px]", stateStyle[p.state] || stateStyle.stopped].join(" ")}>
+                  {p.state}
+                </span>
+              </div>
+              <span className="text-xs text-neutral-500">{p.containers.length} container{p.containers.length !== 1 ? "s" : ""}</span>
+            </div>
+
+            <div className="space-y-2">
+              {p.containers.map((c) => {
+                const isRunning = c.state === "running";
+                return (
+                  <div key={c.id} className="flex items-center justify-between rounded-xl border border-neutral-800 bg-neutral-800/60 px-3 py-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className={["h-2 w-2 shrink-0 rounded-full", isRunning ? "bg-emerald-400" : "bg-neutral-600"].join(" ")} />
+                        <span className="truncate text-sm font-medium">{c.name}</span>
+                      </div>
+                      <div className="mt-0.5 truncate pl-4 text-[10px] text-neutral-500">
+                        {c.image} · {c.status}
+                        {c.ports.length > 0 && ` · ${c.ports.join(", ")}`}
+                      </div>
+                    </div>
+
+                    <div className="ml-3 flex shrink-0 gap-1.5">
+                      {isRunning ? (
+                        <>
+                          <button
+                            disabled={!!actionPending}
+                            onClick={() => runAction(c.id, "restart")}
+                            className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-500/20 disabled:opacity-40"
+                          >
+                            {actionPending === `${c.id}:restart` ? "…" : "Restart"}
+                          </button>
+                          <button
+                            disabled={!!actionPending}
+                            onClick={() => runAction(c.id, "stop")}
+                            className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-300 hover:bg-rose-500/20 disabled:opacity-40"
+                          >
+                            {actionPending === `${c.id}:stop` ? "…" : "Stop"}
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          disabled={!!actionPending}
+                          onClick={() => runAction(c.id, "start")}
+                          className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-40"
+                        >
+                          {actionPending === `${c.id}:start` ? "…" : "Start"}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => openLogs(c)}
+                        className="rounded-lg border border-neutral-700 bg-neutral-800/80 px-2 py-1 text-[10px] text-neutral-300 hover:border-cyan-400/30"
+                      >
+                        Logs
+                      </button>
+                    </div>
                   </div>
-                ))}
+                );
+              })}
+            </div>
+          </div>
+        ))}
+
+        {/* Logs drawer */}
+        {logsTarget && (
+          <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 p-4">
+            <div className="w-full max-w-4xl rounded-2xl border border-cyan-400/20 bg-neutral-900 p-4 shadow-2xl">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <div className="font-semibold">{logsTarget.name}</div>
+                  <div className="text-xs text-neutral-500">Last 100 lines</div>
+                </div>
+                <button onClick={() => setLogsTarget(null)} className="text-xs text-neutral-400 hover:text-white">Close</button>
+              </div>
+              <div className="h-80 overflow-y-auto rounded-xl border border-neutral-800 bg-neutral-950 p-3 font-mono text-[11px] text-neutral-300">
+                {logsLoading ? (
+                  <div className="text-neutral-500">Loading…</div>
+                ) : logsLines.length === 0 ? (
+                  <div className="text-neutral-500">No log output.</div>
+                ) : (
+                  logsLines.map((line, i) => <div key={i}>{line}</div>)
+                )}
               </div>
             </div>
-          ))}
-        </div>
+          </div>
+        )}
       </div>
     );
   }
