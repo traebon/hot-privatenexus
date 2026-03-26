@@ -2,10 +2,11 @@ import fs from "fs";
 import path from "path";
 import { Router } from "express";
 import { getRegisteredFileById, listRegisteredFiles } from "../filesRegistry.js";
+import { readDraft, writeDraft } from "../drafts.js";
 
 export const filesRouter = Router();
 
-// GET /api/files — list all registered files with metadata
+// GET /api/files — list all registered files with metadata + draft state
 filesRouter.get("/", (_req, res) => {
   try {
     res.json(listRegisteredFiles());
@@ -15,7 +16,7 @@ filesRouter.get("/", (_req, res) => {
   }
 });
 
-// GET /api/files/read?id=<id> — read a whitelisted file
+// GET /api/files/read?id=<id> — read whitelisted file + any existing draft
 filesRouter.get("/read", (req, res) => {
   const { id } = req.query;
 
@@ -24,7 +25,6 @@ filesRouter.get("/read", (req, res) => {
   }
 
   const file = getRegisteredFileById(id);
-
   if (!file) {
     return res.status(404).json({ ok: false, error: "File not found in registry" });
   }
@@ -32,6 +32,7 @@ filesRouter.get("/read", (req, res) => {
   try {
     const content = fs.readFileSync(file.path, "utf8");
     const stats = fs.statSync(file.path);
+    const draft = readDraft(file.id);
 
     res.json({
       ok: true,
@@ -46,9 +47,41 @@ filesRouter.get("/read", (req, res) => {
       modifiedAt: stats.mtime.toISOString(),
       size: stats.size,
       content,
+      draft: draft
+        ? { exists: true, content: draft.content, modifiedAt: draft.modifiedAt, size: draft.size }
+        : { exists: false, content: null, modifiedAt: null, size: 0 },
     });
   } catch (err) {
     console.error(`Failed to read file: ${file.path}`, err);
     res.status(500).json({ ok: false, error: "Failed to read file" });
+  }
+});
+
+// POST /api/files/draft — save draft content for a whitelisted file
+filesRouter.post("/draft", (req, res) => {
+  const { id, content } = req.body || {};
+
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  if (typeof content !== "string") {
+    return res.status(400).json({ ok: false, error: "Draft content must be a string" });
+  }
+
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+
+  try {
+    const draft = writeDraft(id, content);
+    res.json({
+      ok: true,
+      id,
+      draft: { exists: true, modifiedAt: draft.modifiedAt, size: draft.size },
+    });
+  } catch (err) {
+    console.error(`Failed to write draft for: ${id}`, err);
+    res.status(500).json({ ok: false, error: "Failed to save draft" });
   }
 });

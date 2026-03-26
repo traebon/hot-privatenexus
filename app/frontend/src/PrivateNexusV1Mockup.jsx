@@ -355,6 +355,9 @@ export default function PrivateNexusV1Mockup() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileViewerOpen, setFileViewerOpen] = useState(false);
   const [filesError, setFilesError] = useState("");
+  const [fileEditorContent, setFileEditorContent] = useState("");
+  const [fileDirty, setFileDirty] = useState(false);
+  const [fileDraftStatus, setFileDraftStatus] = useState("");
 
   // -------------------------------------------------------------------------
   // API — backup and network come from the backend; app/service data is static
@@ -415,8 +418,37 @@ export default function PrivateNexusV1Mockup() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to read file");
       setSelectedFile(data);
+      setFileEditorContent(data.draft?.exists ? data.draft.content : data.content);
+      setFileDirty(false);
+      setFileDraftStatus(
+        data.draft?.exists
+          ? `Draft loaded · ${data.draft.modifiedAt.slice(0, 19).replace("T", " ")}`
+          : "No draft yet"
+      );
       setFileViewerOpen(true);
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] opened file → ${data.fileName}`, ...prev]);
+    } catch (err) {
+      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
+    }
+  }
+
+  async function saveFileDraft() {
+    if (!selectedFile) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/files/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: selectedFile.id, content: fileEditorContent }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save draft");
+      setFileDirty(false);
+      setFileDraftStatus(`Draft saved · ${data.draft.modifiedAt.slice(0, 19).replace("T", " ")}`);
+      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] saved draft → ${selectedFile.id}`, ...prev]);
+      // Refresh file list so draft badge updates
+      const refresh = await fetch(`${API_BASE}/api/files`);
+      const files = await refresh.json();
+      setFilesData(Array.isArray(files) ? files : []);
     } catch (err) {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
     }
@@ -1004,7 +1036,14 @@ export default function PrivateNexusV1Mockup() {
                       <div className="truncate">Modified: <span className="text-neutral-300">{file.modifiedAt ? file.modifiedAt.slice(0, 10) : "—"}</span></div>
                     </div>
 
-                    <div className="mt-4 flex flex-wrap gap-2">
+                    {file.hasDraft && (
+                      <div className="mt-2 inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-1 text-[10px] text-amber-300">
+                        <span>Draft exists</span>
+                        {file.draftModifiedAt && <span className="text-amber-400/60">· {file.draftModifiedAt.slice(0, 10)}</span>}
+                      </div>
+                    )}
+
+                    <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         disabled={!file.exists}
                         onClick={() => openFileById(file.id)}
@@ -1156,11 +1195,28 @@ export default function PrivateNexusV1Mockup() {
               ))}
             </div>
 
-            <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-neutral-800 bg-neutral-950/80 p-4">
-              <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-6 text-neutral-200">
-                {selectedFile.content}
-              </pre>
+            <div className="flex shrink-0 items-center justify-between">
+              <div className="text-xs text-neutral-500">{fileDraftStatus}</div>
+              <div className="flex items-center gap-2">
+                <span className={["rounded-full px-2 py-1 text-[10px]", fileDirty ? "bg-amber-500/15 text-amber-300" : "bg-emerald-500/15 text-emerald-300"].join(" ")}>
+                  {fileDirty ? "Unsaved changes" : "Saved"}
+                </span>
+                <button
+                  onClick={saveFileDraft}
+                  disabled={!fileDirty}
+                  className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-3 py-1 text-[11px] text-rose-300 hover:bg-rose-500/20 disabled:opacity-40"
+                >
+                  Save Draft
+                </button>
+              </div>
             </div>
+
+            <textarea
+              value={fileEditorContent}
+              onChange={(e) => { setFileEditorContent(e.target.value); setFileDirty(true); }}
+              className="min-h-0 flex-1 resize-none rounded-xl border border-neutral-800 bg-neutral-950/80 p-4 font-mono text-xs leading-6 text-neutral-200 outline-none focus:border-rose-400/30"
+              spellCheck={false}
+            />
           </div>
         </div>
       )}

@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { hasDraft, readDraft } from "./drafts.js";
 
 const REGISTRY = [
   {
@@ -58,11 +59,18 @@ function getFileStats(filePath) {
 }
 
 export function listRegisteredFiles() {
-  return REGISTRY.map((entry) => ({
-    ...entry,
-    ...getFileStats(entry.path),
-    fileName: path.basename(entry.path),
-  }));
+  return REGISTRY.map((entry) => {
+    const fileStats = getFileStats(entry.path);
+    const draft = readDraft(entry.id);
+    return {
+      ...entry,
+      ...fileStats,
+      fileName: path.basename(entry.path),
+      hasDraft: hasDraft(entry.id),
+      draftModifiedAt: draft ? draft.modifiedAt : null,
+      draftSize: draft ? draft.size : 0,
+    };
+  });
 }
 
 export function getRegisteredFileById(id) {
