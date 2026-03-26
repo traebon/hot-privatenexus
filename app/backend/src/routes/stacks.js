@@ -17,7 +17,7 @@ function formatContainer(c) {
     created: c.Created,
     ports: (c.Ports || [])
       .filter((p) => p.PublicPort)
-      .map((p) => `${p.PublicPort}:${p.PrivatePort}/${p.Type}`),
+      .map((p) => `${p.IP || "0.0.0.0"}:${p.PublicPort}->${p.PrivatePort}/${p.Type || "tcp"}`),
     project: labels["com.docker.compose.project"] || null,
     service: labels["com.docker.compose.service"] || null,
     composeFile: labels["com.docker.compose.project.config_files"] || null,
