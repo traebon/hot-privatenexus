@@ -351,6 +351,10 @@ export default function PrivateNexusV1Mockup() {
   const [metricsData, setMetricsData] = useState({ cpu: [], memory: [], storage: [], network: [], stats: null, collectedAt: null });
   const [metricsError, setMetricsError] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [filesData, setFilesData] = useState([]);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [fileViewerOpen, setFileViewerOpen] = useState(false);
+  const [filesError, setFilesError] = useState("");
 
   // -------------------------------------------------------------------------
   // API — backup and network come from the backend; app/service data is static
@@ -395,6 +399,29 @@ export default function PrivateNexusV1Mockup() {
     };
   }, [API_BASE]);
 
+  useEffect(() => {
+    fetch(`${API_BASE}/api/files`)
+      .then((res) => res.json())
+      .then((data) => {
+        setFilesData(Array.isArray(data) ? data : []);
+        setFilesError("");
+      })
+      .catch(() => setFilesError("Failed to load file registry"));
+  }, [API_BASE]);
+
+  async function openFileById(id) {
+    try {
+      const res = await fetch(`${API_BASE}/api/files/read?id=${encodeURIComponent(id)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to read file");
+      setSelectedFile(data);
+      setFileViewerOpen(true);
+      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] opened file → ${data.fileName}`, ...prev]);
+    } catch (err) {
+      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Static data
   // -------------------------------------------------------------------------
@@ -406,13 +433,14 @@ export default function PrivateNexusV1Mockup() {
     { title: "Backup OK", level: "info" },
   ];
 
-  const boards = ["Home", "Ops", "Admin", "Stacks", "Emergency"];
+  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "Emergency"];
 
   const boardThemes = {
     Home:      { active: "from-cyan-400 to-blue-500",    ring: "border-cyan-400/30",    hover: "hover:border-cyan-400/30",    shell: "from-cyan-500/10 to-blue-500/5" },
     Ops:       { active: "from-emerald-400 to-green-500", ring: "border-emerald-400/30", hover: "hover:border-emerald-400/30", shell: "from-emerald-500/10 to-green-500/5" },
     Admin:     { active: "from-purple-400 to-indigo-500", ring: "border-purple-400/30",  hover: "hover:border-purple-400/30",  shell: "from-purple-500/10 to-indigo-500/5" },
     Stacks:    { active: "from-amber-400 to-orange-500",  ring: "border-amber-400/30",   hover: "hover:border-amber-400/30",   shell: "from-amber-500/10 to-orange-500/5" },
+    Files:     { active: "from-rose-400 to-pink-500",     ring: "border-rose-400/30",    hover: "hover:border-rose-400/30",    shell: "from-rose-500/10 to-pink-500/5" },
     Emergency: { active: "from-rose-400 to-pink-500",     ring: "border-rose-400/30",    hover: "hover:border-rose-400/30",    shell: "from-rose-500/10 to-pink-500/5" },
   };
 
@@ -939,6 +967,66 @@ export default function PrivateNexusV1Mockup() {
           {/* Stacks */}
           {activeBoard === "Stacks" && <StacksBoard />}
 
+          {/* Files */}
+          {activeBoard === "Files" && (
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-rose-400/20 bg-gradient-to-r from-rose-500/10 via-pink-500/10 to-purple-500/10 p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-xs uppercase tracking-wider text-rose-300/80">Config Registry</div>
+                    <div className="text-lg font-semibold">Files &amp; Config Control</div>
+                  </div>
+                  <span className="rounded-full bg-neutral-900/70 px-3 py-1 text-xs text-neutral-300">
+                    {filesData.filter((f) => f.exists).length}/{filesData.length} on disk
+                  </span>
+                </div>
+              </div>
+
+              {filesError && (
+                <div className="rounded-2xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-200">{filesError}</div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                {filesData.map((file) => (
+                  <div key={file.id} className={["rounded-2xl border bg-neutral-900/70 p-4 transition", file.exists ? "border-neutral-800 hover:border-rose-400/30" : "border-neutral-800/40 opacity-60"].join(" ")}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-semibold">{file.label}</div>
+                        <div className="mt-0.5 font-mono text-xs text-neutral-500">{file.fileName}</div>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-neutral-800 px-2 py-1 text-[10px] text-neutral-400">{file.type}</span>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-neutral-400">
+                      <div>Stack: <span className="text-neutral-300">{file.stack}</span></div>
+                      <div>Exists: <span className={file.exists ? "text-emerald-400" : "text-rose-400"}>{file.exists ? "yes" : "no"}</span></div>
+                      <div>Size: <span className="text-neutral-300">{file.size > 0 ? `${file.size} B` : "—"}</span></div>
+                      <div className="truncate">Modified: <span className="text-neutral-300">{file.modifiedAt ? file.modifiedAt.slice(0, 10) : "—"}</span></div>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        disabled={!file.exists}
+                        onClick={() => openFileById(file.id)}
+                        className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-3 py-1 text-[11px] text-rose-300 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        View
+                      </button>
+                      <span className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-1 text-[11px] text-neutral-500">
+                        {file.editable ? "Editable" : "Read-only"}
+                      </span>
+                      {file.validatable && (
+                        <span className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-1 text-[11px] text-neutral-500">
+                          Validatable
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Emergency */}
           {activeBoard === "Emergency" && renderCards([
             { name: "Shutdown All Stacks",  variant: "safe" },
@@ -1032,6 +1120,46 @@ export default function PrivateNexusV1Mockup() {
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* File viewer modal */}
+      {fileViewerOpen && selectedFile && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70">
+          <div className="flex max-h-[90vh] w-[min(96vw,1200px)] flex-col overflow-hidden rounded-2xl border border-rose-400/30 bg-neutral-900 p-6">
+            <div className="mb-4 flex shrink-0 items-center justify-between gap-4">
+              <div>
+                <div className="text-lg font-semibold">{selectedFile.label}</div>
+                <div className="font-mono text-xs text-neutral-500">{selectedFile.path}</div>
+              </div>
+              <button
+                onClick={() => { setFileViewerOpen(false); setSelectedFile(null); }}
+                className="text-xs text-neutral-400 hover:text-white"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mb-4 grid shrink-0 grid-cols-4 gap-3">
+              {[
+                { label: "Type",     value: selectedFile.type },
+                { label: "Stack",    value: selectedFile.stack },
+                { label: "Size",     value: `${selectedFile.size} B` },
+                { label: "Modified", value: selectedFile.modifiedAt ? selectedFile.modifiedAt.slice(0, 19).replace("T", " ") : "n/a" },
+              ].map(({ label, value }) => (
+                <div key={label} className="rounded-xl border border-neutral-800 bg-neutral-800/50 p-3">
+                  <div className="text-[10px] uppercase tracking-wide text-neutral-500">{label}</div>
+                  <div className="mt-1 truncate text-sm text-neutral-200">{value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-neutral-800 bg-neutral-950/80 p-4">
+              <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-6 text-neutral-200">
+                {selectedFile.content}
+              </pre>
             </div>
           </div>
         </div>
