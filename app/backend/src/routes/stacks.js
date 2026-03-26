@@ -53,19 +53,50 @@ stacksRouter.get("/", async (_req, res) => {
   }
 });
 
-// GET /api/stacks/:id — single container inspect
+// GET /api/stacks/:id — single container inspect summary
 stacksRouter.get("/:id", async (req, res) => {
   try {
     const container = docker.getContainer(req.params.id);
     const info = await container.inspect();
+
+    const publishedPorts = [];
+    for (const [key, bindings] of Object.entries(info.NetworkSettings?.Ports || {})) {
+      if (bindings) {
+        for (const b of bindings) {
+          publishedPorts.push(`${b.HostIp || "0.0.0.0"}:${b.HostPort} -> ${key}`);
+        }
+      }
+    }
+
     res.json({
       id: info.Id.slice(0, 12),
       name: info.Name.replace(/^\//, ""),
       image: info.Config?.Image,
-      state: info.State,
+      state: {
+        status: info.State?.Status,
+        running: info.State?.Running,
+        paused: info.State?.Paused,
+        restarting: info.State?.Restarting,
+        health: info.State?.Health?.Status || null,
+        startedAt: info.State?.StartedAt,
+        finishedAt: info.State?.FinishedAt,
+        exitCode: info.State?.ExitCode,
+      },
       created: info.Created,
-      mounts: info.Mounts?.map((m) => ({ src: m.Source, dst: m.Destination, mode: m.Mode })),
-      ports: info.NetworkSettings?.Ports,
+      restartPolicy: {
+        name: info.HostConfig?.RestartPolicy?.Name || "no",
+        maxRetry: info.HostConfig?.RestartPolicy?.MaximumRetryCount || 0,
+      },
+      mounts: (info.Mounts || []).map((m) => ({
+        type: m.Type,
+        src: m.Source,
+        dst: m.Destination,
+        mode: m.Mode,
+      })),
+      mountCount: (info.Mounts || []).length,
+      networks: Object.keys(info.NetworkSettings?.Networks || {}),
+      publishedPorts,
+      labels: info.Config?.Labels || {},
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

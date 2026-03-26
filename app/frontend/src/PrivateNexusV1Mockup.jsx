@@ -10,18 +10,34 @@ export default function PrivateNexusV1Mockup() {
     const [projects, setProjects] = useState([]);
     const [total, setTotal] = useState(0);
     const [stacksError, setStacksError] = useState(false);
-    const [actionPending, setActionPending] = useState(null); // "containerId:action"
-    const [logsTarget, setLogsTarget] = useState(null);       // { id, name }
+    const [actionPending, setActionPending] = useState(null);
+    const [actionError, setActionError] = useState(null);
+
+    // Logs drawer state
+    const [logsTarget, setLogsTarget] = useState(null);
     const [logsLines, setLogsLines] = useState([]);
     const [logsLoading, setLogsLoading] = useState(false);
+    const [autoScroll, setAutoScroll] = useState(true);
+    const logsEndRef = React.useRef(null);
 
-    const stateStyle = {
-      running: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
-      exited:  "bg-neutral-700/60 text-neutral-400 border-neutral-600/30",
-      paused:  "bg-amber-500/20 text-amber-300 border-amber-500/30",
-      partial: "bg-amber-500/20 text-amber-300 border-amber-500/30",
-      stopped: "bg-neutral-700/60 text-neutral-400 border-neutral-600/30",
+    // Inspect panel state
+    const [inspectTarget, setInspectTarget] = useState(null);
+    const [inspectData, setInspectData] = useState(null);
+    const [inspectLoading, setInspectLoading] = useState(false);
+
+    // Health badge config — covers all Docker states
+    const healthBadge = {
+      running:    { dot: "bg-emerald-400",  badge: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30" },
+      exited:     { dot: "bg-neutral-500",  badge: "bg-neutral-700/60 text-neutral-400 border-neutral-600/30" },
+      restarting: { dot: "bg-amber-400 animate-pulse", badge: "bg-amber-500/20 text-amber-300 border-amber-500/30" },
+      paused:     { dot: "bg-blue-400",     badge: "bg-blue-500/20 text-blue-300 border-blue-500/30" },
+      created:    { dot: "bg-neutral-400",  badge: "bg-neutral-700/40 text-neutral-400 border-neutral-700/30" },
+      unhealthy:  { dot: "bg-rose-500 animate-pulse", badge: "bg-rose-500/20 text-rose-300 border-rose-500/30" },
+      partial:    { dot: "bg-amber-400",    badge: "bg-amber-500/20 text-amber-300 border-amber-500/30" },
+      stopped:    { dot: "bg-neutral-500",  badge: "bg-neutral-700/60 text-neutral-400 border-neutral-600/30" },
     };
+
+    const getBadge = (state) => healthBadge[state] || healthBadge.stopped;
 
     const loadStacks = async () => {
       try {
@@ -41,16 +57,28 @@ export default function PrivateNexusV1Mockup() {
       return () => clearInterval(interval);
     }, []);
 
+    // Auto-scroll logs to bottom
+    useEffect(() => {
+      if (autoScroll && logsEndRef.current) {
+        logsEndRef.current.scrollIntoView({ behavior: "smooth" });
+      }
+    }, [logsLines, autoScroll]);
+
     const runAction = async (containerId, action) => {
       const key = `${containerId}:${action}`;
       setActionPending(key);
+      setActionError(null);
       try {
-        await fetch(`${API_BASE}/api/actions/run`, {
+        const res = await fetch(`${API_BASE}/api/actions/run`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action, target: containerId }),
+          body: JSON.stringify({ action, containerId }),
         });
+        const data = await res.json();
+        if (!res.ok) setActionError(`${action} failed: ${data.error}`);
         await loadStacks();
+      } catch (err) {
+        setActionError(`${action} failed: ${err.message}`);
       } finally {
         setActionPending(null);
       }
@@ -63,11 +91,33 @@ export default function PrivateNexusV1Mockup() {
       try {
         const res = await fetch(`${API_BASE}/api/stacks/${container.id}/logs?tail=100`);
         const data = await res.json();
-        setLogsLines(data.lines || []);
+        // Split timestamp from message for cleaner display
+        setLogsLines((data.lines || []).map((line) => {
+          const tsMatch = line.match(/^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s(.*)/s);
+          return tsMatch
+            ? { ts: tsMatch[1].replace("T", " ").replace("Z", "").slice(0, 19), msg: tsMatch[2] }
+            : { ts: null, msg: line };
+        }));
       } catch {
-        setLogsLines(["Failed to fetch logs."]);
+        setLogsLines([{ ts: null, msg: "Failed to fetch logs." }]);
       } finally {
         setLogsLoading(false);
+      }
+    };
+
+    const refreshLogs = () => logsTarget && openLogs(logsTarget);
+
+    const openInspect = async (container) => {
+      setInspectTarget(container);
+      setInspectData(null);
+      setInspectLoading(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/stacks/${container.id}`);
+        setInspectData(await res.json());
+      } catch {
+        setInspectData({ error: "Failed to fetch inspect data." });
+      } finally {
+        setInspectLoading(false);
       }
     };
 
@@ -85,114 +135,199 @@ export default function PrivateNexusV1Mockup() {
             <div className="flex items-center gap-2">
               <span className="rounded-full bg-emerald-500/20 px-2 py-1 text-xs text-emerald-300">{runningCount} running</span>
               <span className="rounded-full bg-neutral-700/60 px-2 py-1 text-xs text-neutral-400">{total} total</span>
-              <button
-                onClick={loadStacks}
-                className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-1 text-xs text-amber-300 hover:bg-amber-500/20"
-              >
+              <button onClick={loadStacks} className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-1 text-xs text-amber-300 hover:bg-amber-500/20">
                 Refresh
               </button>
             </div>
           </div>
-          {stacksError && (
-            <div className="mt-2 text-xs text-rose-400">Docker socket unavailable — cannot list containers.</div>
+          {stacksError && <div className="mt-2 text-xs text-rose-400">Docker socket unavailable — cannot list containers.</div>}
+          {actionError && (
+            <div className="mt-2 flex items-center justify-between text-xs text-rose-400">
+              <span>{actionError}</span>
+              <button onClick={() => setActionError(null)} className="ml-2 text-neutral-500 hover:text-white">×</button>
+            </div>
           )}
         </div>
 
-        {/* Projects */}
         {projects.length === 0 && !stacksError && (
           <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-6 text-center text-sm text-neutral-500">
             No containers found on this host.
           </div>
         )}
 
-        {projects.map((p) => (
-          <div key={p.project} className="rounded-2xl border border-amber-400/20 bg-neutral-900/80 p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold">{p.project === "__standalone__" ? "Standalone" : p.project}</span>
-                <span className={["rounded-full border px-2 py-0.5 text-[10px]", stateStyle[p.state] || stateStyle.stopped].join(" ")}>
-                  {p.state}
-                </span>
+        {projects.map((p) => {
+          const badge = getBadge(p.state);
+          return (
+            <div key={p.project} className="rounded-2xl border border-amber-400/20 bg-neutral-900/80 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold">{p.project === "__standalone__" ? "Standalone" : p.project}</span>
+                  <span className={["rounded-full border px-2 py-0.5 text-[10px]", badge.badge].join(" ")}>{p.state}</span>
+                </div>
+                <span className="text-xs text-neutral-500">{p.containers.length} container{p.containers.length !== 1 ? "s" : ""}</span>
               </div>
-              <span className="text-xs text-neutral-500">{p.containers.length} container{p.containers.length !== 1 ? "s" : ""}</span>
-            </div>
 
-            <div className="space-y-2">
-              {p.containers.map((c) => {
-                const isRunning = c.state === "running";
-                return (
-                  <div key={c.id} className="flex items-center justify-between rounded-xl border border-neutral-800 bg-neutral-800/60 px-3 py-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className={["h-2 w-2 shrink-0 rounded-full", isRunning ? "bg-emerald-400" : "bg-neutral-600"].join(" ")} />
-                        <span className="truncate text-sm font-medium">{c.name}</span>
+              <div className="space-y-2">
+                {p.containers.map((c) => {
+                  const cb = getBadge(c.state);
+                  const isRunning = c.state === "running";
+                  return (
+                    <div key={c.id} className="flex items-center justify-between rounded-xl border border-neutral-800 bg-neutral-800/60 px-3 py-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className={["h-2 w-2 shrink-0 rounded-full", cb.dot].join(" ")} />
+                          <span className="truncate text-sm font-medium">{c.name}</span>
+                          <span className={["rounded-full border px-1.5 py-0.5 text-[9px]", cb.badge].join(" ")}>{c.state}</span>
+                        </div>
+                        <div className="mt-0.5 truncate pl-4 text-[10px] text-neutral-500">
+                          {c.image} · {c.status}
+                          {c.ports.length > 0 && ` · ${c.ports.join(" · ")}`}
+                        </div>
                       </div>
-                      <div className="mt-0.5 truncate pl-4 text-[10px] text-neutral-500">
-                        {c.image} · {c.status}
-                        {c.ports.length > 0 && ` · ${c.ports.join(", ")}`}
-                      </div>
-                    </div>
 
-                    <div className="ml-3 flex shrink-0 gap-1.5">
-                      {isRunning ? (
-                        <>
+                      <div className="ml-3 flex shrink-0 gap-1.5">
+                        {isRunning ? (
+                          <>
+                            <button
+                              disabled={!!actionPending}
+                              onClick={() => runAction(c.id, "restart")}
+                              className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-500/20 disabled:opacity-40"
+                            >
+                              {actionPending === `${c.id}:restart` ? "…" : "Restart"}
+                            </button>
+                            <button
+                              disabled={!!actionPending}
+                              onClick={() => runAction(c.id, "stop")}
+                              className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-300 hover:bg-rose-500/20 disabled:opacity-40"
+                            >
+                              {actionPending === `${c.id}:stop` ? "…" : "Stop"}
+                            </button>
+                          </>
+                        ) : (
                           <button
                             disabled={!!actionPending}
-                            onClick={() => runAction(c.id, "restart")}
-                            className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-500/20 disabled:opacity-40"
+                            onClick={() => runAction(c.id, "start")}
+                            className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-40"
                           >
-                            {actionPending === `${c.id}:restart` ? "…" : "Restart"}
+                            {actionPending === `${c.id}:start` ? "…" : "Start"}
                           </button>
-                          <button
-                            disabled={!!actionPending}
-                            onClick={() => runAction(c.id, "stop")}
-                            className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-300 hover:bg-rose-500/20 disabled:opacity-40"
-                          >
-                            {actionPending === `${c.id}:stop` ? "…" : "Stop"}
-                          </button>
-                        </>
-                      ) : (
+                        )}
                         <button
-                          disabled={!!actionPending}
-                          onClick={() => runAction(c.id, "start")}
-                          className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-40"
+                          onClick={() => openInspect(c)}
+                          className="rounded-lg border border-neutral-700 bg-neutral-800/80 px-2 py-1 text-[10px] text-neutral-300 hover:border-purple-400/30"
                         >
-                          {actionPending === `${c.id}:start` ? "…" : "Start"}
+                          Inspect
                         </button>
-                      )}
-                      <button
-                        onClick={() => openLogs(c)}
-                        className="rounded-lg border border-neutral-700 bg-neutral-800/80 px-2 py-1 text-[10px] text-neutral-300 hover:border-cyan-400/30"
-                      >
-                        Logs
-                      </button>
+                        <button
+                          onClick={() => openLogs(c)}
+                          className="rounded-lg border border-neutral-700 bg-neutral-800/80 px-2 py-1 text-[10px] text-neutral-300 hover:border-cyan-400/30"
+                        >
+                          Logs
+                        </button>
+                      </div>
                     </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Inspect panel */}
+        {inspectTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-lg rounded-2xl border border-purple-400/20 bg-neutral-900 p-5 shadow-2xl">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <div className="font-semibold">{inspectTarget.name}</div>
+                  <div className="text-xs text-neutral-500">Inspect summary</div>
+                </div>
+                <button onClick={() => setInspectTarget(null)} className="text-xs text-neutral-400 hover:text-white">Close</button>
+              </div>
+
+              {inspectLoading && <div className="text-sm text-neutral-500">Loading…</div>}
+              {inspectData?.error && <div className="text-sm text-rose-400">{inspectData.error}</div>}
+
+              {inspectData && !inspectData.error && (
+                <div className="space-y-3 text-sm">
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { label: "Image",          value: inspectData.image },
+                      { label: "Status",         value: inspectData.state?.status },
+                      { label: "Restart policy", value: `${inspectData.restartPolicy?.name}${inspectData.restartPolicy?.maxRetry ? ` (×${inspectData.restartPolicy.maxRetry})` : ""}` },
+                      { label: "Mounts",         value: `${inspectData.mountCount} volume${inspectData.mountCount !== 1 ? "s" : ""}` },
+                      { label: "Networks",       value: (inspectData.networks || []).join(", ") || "none" },
+                      { label: "Health",         value: inspectData.state?.health || "no healthcheck" },
+                      { label: "Started",        value: inspectData.state?.startedAt ? inspectData.state.startedAt.slice(0, 19).replace("T", " ") : "—" },
+                      { label: "Exit code",      value: inspectData.state?.running ? "—" : String(inspectData.state?.exitCode ?? "—") },
+                    ].map(({ label, value }) => (
+                      <div key={label} className="rounded-lg border border-neutral-800 bg-neutral-800/60 px-3 py-2">
+                        <div className="text-[10px] uppercase tracking-wide text-neutral-500">{label}</div>
+                        <div className="mt-0.5 truncate text-xs text-neutral-200">{value}</div>
+                      </div>
+                    ))}
                   </div>
-                );
-              })}
+
+                  {inspectData.publishedPorts?.length > 0 && (
+                    <div className="rounded-lg border border-neutral-800 bg-neutral-800/60 px-3 py-2">
+                      <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">Published ports</div>
+                      {inspectData.publishedPorts.map((p) => (
+                        <div key={p} className="font-mono text-[11px] text-neutral-300">{p}</div>
+                      ))}
+                    </div>
+                  )}
+
+                  {inspectData.mounts?.length > 0 && (
+                    <div className="rounded-lg border border-neutral-800 bg-neutral-800/60 px-3 py-2">
+                      <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">Mounts</div>
+                      {inspectData.mounts.map((m, i) => (
+                        <div key={i} className="font-mono text-[11px] text-neutral-400 truncate">{m.src} → {m.dst} <span className="text-neutral-600">({m.mode})</span></div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
-        ))}
+        )}
 
         {/* Logs drawer */}
         {logsTarget && (
           <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 p-4">
             <div className="w-full max-w-4xl rounded-2xl border border-cyan-400/20 bg-neutral-900 p-4 shadow-2xl">
-              <div className="mb-3 flex items-center justify-between">
+              <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
                   <div className="font-semibold">{logsTarget.name}</div>
-                  <div className="text-xs text-neutral-500">Last 100 lines</div>
+                  <div className="text-xs text-neutral-500">Last 100 lines · timestamps UTC</div>
                 </div>
-                <button onClick={() => setLogsTarget(null)} className="text-xs text-neutral-400 hover:text-white">Close</button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setAutoScroll((v) => !v)}
+                    className={["rounded-lg border px-2 py-1 text-[10px] transition", autoScroll ? "border-cyan-400/30 bg-cyan-500/10 text-cyan-300" : "border-neutral-700 bg-neutral-800/80 text-neutral-400"].join(" ")}
+                  >
+                    Auto-scroll {autoScroll ? "on" : "off"}
+                  </button>
+                  <button onClick={refreshLogs} disabled={logsLoading} className="rounded-lg border border-neutral-700 bg-neutral-800/80 px-2 py-1 text-[10px] text-neutral-300 hover:border-cyan-400/30 disabled:opacity-40">
+                    Refresh
+                  </button>
+                  <button onClick={() => setLogsTarget(null)} className="text-xs text-neutral-400 hover:text-white">Close</button>
+                </div>
               </div>
-              <div className="h-80 overflow-y-auto rounded-xl border border-neutral-800 bg-neutral-950 p-3 font-mono text-[11px] text-neutral-300">
+
+              <div className="h-80 overflow-y-auto rounded-xl border border-neutral-800 bg-neutral-950 p-3 font-mono text-[11px]">
                 {logsLoading ? (
                   <div className="text-neutral-500">Loading…</div>
                 ) : logsLines.length === 0 ? (
                   <div className="text-neutral-500">No log output.</div>
                 ) : (
-                  logsLines.map((line, i) => <div key={i}>{line}</div>)
+                  logsLines.map((line, i) => (
+                    <div key={i} className="flex gap-3 leading-relaxed">
+                      {line.ts && <span className="shrink-0 text-neutral-600">{line.ts}</span>}
+                      <span className="text-neutral-300">{line.msg}</span>
+                    </div>
+                  ))
                 )}
+                <div ref={logsEndRef} />
               </div>
             </div>
           </div>
