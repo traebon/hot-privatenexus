@@ -164,7 +164,27 @@ export default function PrivateNexusV1Mockup() {
                   <span className="font-semibold">{p.project === "__standalone__" ? "Standalone" : p.project}</span>
                   <span className={["rounded-full border px-2 py-0.5 text-[10px]", badge.badge].join(" ")}>{p.state}</span>
                 </div>
-                <span className="text-xs text-neutral-500">{p.containers.length} container{p.containers.length !== 1 ? "s" : ""}</span>
+                <div className="flex items-center gap-2">
+                  {(() => {
+                    const stackFiles = getFilesForStack(p.project);
+                    if (stackFiles.length === 0) return null;
+                    const hasDraft = stackHasDraft(p.project);
+                    return (
+                      <>
+                        <span className={["rounded-full px-2 py-0.5 text-[10px]", hasDraft ? "bg-amber-500/15 text-amber-300" : "bg-rose-500/10 text-rose-300/70"].join(" ")}>
+                          {stackFiles.length} file{stackFiles.length !== 1 ? "s" : ""}{hasDraft ? " · draft" : ""}
+                        </span>
+                        <button
+                          onClick={() => editStackConfig(p.project)}
+                          className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-300 hover:bg-rose-500/20"
+                        >
+                          Edit Config
+                        </button>
+                      </>
+                    );
+                  })()}
+                  <span className="text-xs text-neutral-500">{p.containers.length} container{p.containers.length !== 1 ? "s" : ""}</span>
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -360,6 +380,8 @@ export default function PrivateNexusV1Mockup() {
   const [fileDraftStatus, setFileDraftStatus] = useState("");
   const [showSaveLiveConfirm, setShowSaveLiveConfirm] = useState(false);
   const [fileLiveStatus, setFileLiveStatus] = useState("");
+  const [fileValidation, setFileValidation] = useState(null); // null | { status, issues }
+  const [filesStackFilter, setFilesStackFilter] = useState("all");
 
   // -------------------------------------------------------------------------
   // API — backup and network come from the backend; app/service data is static
@@ -422,6 +444,7 @@ export default function PrivateNexusV1Mockup() {
       setSelectedFile(data);
       setFileEditorContent(data.draft?.exists ? data.draft.content : data.content);
       setFileDirty(false);
+      setFileValidation(null);
       setFileDraftStatus(
         data.draft?.exists
           ? `Draft loaded · ${data.draft.modifiedAt.slice(0, 19).replace("T", " ")}`
@@ -492,6 +515,56 @@ export default function PrivateNexusV1Mockup() {
     setFileDirty(false);
     setFileLiveStatus("");
     setFileDraftStatus("Reverted to live file");
+    setFileValidation(null);
+  }
+
+  async function validateFileContent() {
+    if (!selectedFile) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/files/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: selectedFile.id, content: fileEditorContent }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Validation request failed");
+      setFileValidation({ status: data.status, issues: data.issues || [] });
+      const label = data.status === "green" ? "valid" : data.status === "amber" ? "warnings" : "errors";
+      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] validated → ${selectedFile.id} · ${label}`, ...prev]);
+    } catch (err) {
+      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // A5 — stack ↔ file linkage helpers
+  // -------------------------------------------------------------------------
+  function getFilesForStack(stackName) {
+    return filesData.filter((f) => f.stack === stackName);
+  }
+  function stackHasDraft(stackName) {
+    return filesData.some((f) => f.stack === stackName && f.hasDraft);
+  }
+  const FILE_TYPE_ORDER = ["compose", "env", "caddy", "dockerfile", "docs", "javascript"];
+  function getPrimaryFile(files) {
+    const explicit = files.find((f) => f.primary && f.exists);
+    if (explicit) return explicit;
+    return [...files]
+      .filter((f) => f.exists)
+      .sort((a, b) => {
+        const ai = FILE_TYPE_ORDER.indexOf(a.type);
+        const bi = FILE_TYPE_ORDER.indexOf(b.type);
+        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+      })[0] || null;
+  }
+  async function editStackConfig(stackName) {
+    const files = getFilesForStack(stackName);
+    setFilesStackFilter(stackName);
+    setActiveBoard("Files");
+    const primary = getPrimaryFile(files);
+    if (primary) {
+      await openFileById(primary.id);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -517,13 +590,6 @@ export default function PrivateNexusV1Mockup() {
   };
 
   const theme = boardThemes[activeBoard];
-
-  const services = [
-    { name: "Nextcloud",  cpu: 24, mem: 62 },
-    { name: "Immich",     cpu: 71, mem: 78 },
-    { name: "Notesnook", cpu: 9,  mem: 31 },
-    { name: "Paperless",  cpu: 0,  mem: 0 },
-  ];
 
   const recentApps = [
     { name: "Nextcloud",  logo: "☁️",  category: "Cloud" },
@@ -570,10 +636,10 @@ export default function PrivateNexusV1Mockup() {
   // Ops board — graph helpers
   // -------------------------------------------------------------------------
   const graphSeries = {
-    cpu:     metricsData.cpu.length     ? metricsData.cpu     : [42, 51, 48, 63, 57, 66, 52, 60, 55, 48],
-    memory:  metricsData.memory.length  ? metricsData.memory  : [58, 59, 60, 61, 62, 63, 64, 63, 62, 63],
-    storage: metricsData.storage.length ? metricsData.storage : [68, 68, 69, 69, 70, 70, 71, 71, 71, 71],
-    network: metricsData.network.length ? metricsData.network : [320, 410, 560, 620, 710, 842, 690, 760, 720, 680],
+    cpu:     metricsData.cpu,
+    memory:  metricsData.memory,
+    storage: metricsData.storage,
+    network: metricsData.network,
   };
 
   // Backend-computed stats; fall back to null (frontend will compute from series)
@@ -588,7 +654,16 @@ export default function PrivateNexusV1Mockup() {
     return                       { arrow: "↓", cls: isNetwork ? "text-neutral-400" : "text-emerald-400" };
   }
 
-  const xLabels = ["-45m", "-35m", "-25m", "-15m", "now"];
+  function getMetricsFreshness() {
+    if (!metricsData.collectedAt) return { label: "no data yet", cls: "text-neutral-500", stale: true };
+    const ageMins = (Date.now() - new Date(metricsData.collectedAt).getTime()) / 60000;
+    if (ageMins < 5)  return { label: `updated ${Math.round(ageMins * 60)}s ago`, cls: "text-emerald-400", stale: false };
+    if (ageMins < 10) return { label: `stale · ${Math.round(ageMins)}m ago`, cls: "text-amber-400", stale: true };
+    return                   { label: `offline · ${Math.round(ageMins)}m ago`, cls: "text-rose-400", stale: true };
+  }
+
+  // 10 points × 2-min interval = ~18-min window; labels mark 0/25/50/75/100% positions
+  const xLabels = ["-18m", "-14m", "-9m", "-5m", "now"];
 
   function buildPoints(data, maxValue) {
     const min = Math.min(...data);
@@ -675,8 +750,9 @@ export default function PrivateNexusV1Mockup() {
             <div className="text-lg font-semibold">System Overview</div>
           </div>
           <div className="flex items-center gap-2">
-            <span className="rounded-full bg-emerald-500/20 px-2 py-1 text-xs text-emerald-300">All Systems Nominal</span>
-            <span className="rounded-full bg-blue-500/20 px-2 py-1 text-xs text-blue-300">Uptime 99.98%</span>
+            {metricsData.collectedAt
+              ? <span className="rounded-full bg-emerald-500/20 px-2 py-1 text-xs text-emerald-300">Metrics live</span>
+              : <span className="rounded-full bg-neutral-700/60 px-2 py-1 text-xs text-neutral-400">Awaiting metrics</span>}
             <button
               onClick={() => setShowAllApps(true)}
               className="ml-2 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs text-cyan-300 hover:bg-cyan-500/20"
@@ -708,20 +784,46 @@ export default function PrivateNexusV1Mockup() {
 
       <div className="grid grid-cols-2 gap-4">
         <div className="rounded-2xl border border-cyan-400/20 bg-gradient-to-br from-cyan-500/10 to-blue-500/5 p-4">
-          <div className="font-semibold">System Overview</div>
-          <div className="mt-1 text-xs text-neutral-300">CPU 32% · RAM 58%</div>
-        </div>
-        <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/10 to-green-500/5 p-4">
-          <div className="font-semibold">Active Services</div>
-          <div className="mt-1 text-xs text-neutral-300">21 running</div>
-        </div>
-        <div className="rounded-2xl border border-amber-400/20 bg-gradient-to-br from-amber-500/10 to-orange-500/5 p-4">
-          <div className="font-semibold">Recent Activity</div>
-          <div className="mt-1 text-xs text-neutral-300">5 events in last hour</div>
+          <div className="text-[10px] uppercase tracking-wide text-neutral-500">CPU</div>
+          <div className="mt-1 text-2xl font-semibold">
+            {metricsData.stats?.cpu?.current !== null && metricsData.stats?.cpu?.current !== undefined
+              ? `${metricsData.stats.cpu.current}%`
+              : "—"}
+          </div>
+          <div className="mt-1 text-xs text-neutral-500">
+            {metricsData.stats?.cpu?.trend === "up" ? "↑ increasing" : metricsData.stats?.cpu?.trend === "down" ? "↓ decreasing" : "→ stable"}
+          </div>
         </div>
         <div className="rounded-2xl border border-purple-400/20 bg-gradient-to-br from-purple-500/10 to-indigo-500/5 p-4">
-          <div className="font-semibold">Quick Actions</div>
-          <div className="mt-1 text-xs text-neutral-300">Backup · Restart · Logs</div>
+          <div className="text-[10px] uppercase tracking-wide text-neutral-500">Memory</div>
+          <div className="mt-1 text-2xl font-semibold">
+            {metricsData.stats?.memory?.current !== null && metricsData.stats?.memory?.current !== undefined
+              ? `${metricsData.stats.memory.current}%`
+              : "—"}
+          </div>
+          <div className="mt-1 text-xs text-neutral-500">
+            {metricsData.stats?.memory?.trend === "up" ? "↑ increasing" : metricsData.stats?.memory?.trend === "down" ? "↓ decreasing" : "→ stable"}
+          </div>
+        </div>
+        <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/10 to-green-500/5 p-4">
+          <div className="text-[10px] uppercase tracking-wide text-neutral-500">Storage</div>
+          <div className="mt-1 text-2xl font-semibold">
+            {metricsData.stats?.storage?.current !== null && metricsData.stats?.storage?.current !== undefined
+              ? `${metricsData.stats.storage.current}%`
+              : "—"}
+          </div>
+          <div className="mt-1 text-xs text-neutral-500">used on /</div>
+        </div>
+        <div className="rounded-2xl border border-amber-400/20 bg-gradient-to-br from-amber-500/10 to-orange-500/5 p-4">
+          <div className="text-[10px] uppercase tracking-wide text-neutral-500">Metrics</div>
+          <div className="mt-1 text-sm font-semibold">
+            {metricsData.collectedAt
+              ? new Date(metricsData.collectedAt).toLocaleTimeString()
+              : "—"}
+          </div>
+          <div className="mt-1 text-xs text-neutral-500">
+            {metricsData.cpu.length} point{metricsData.cpu.length !== 1 ? "s" : ""} · {metricsData.collectedAt ? "live" : "waiting"}
+          </div>
         </div>
       </div>
     </div>
@@ -817,7 +919,7 @@ export default function PrivateNexusV1Mockup() {
         </div>
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
           <div className="text-sm font-semibold">Last Change</div>
-          <div className="mt-1 text-xs text-neutral-400">2 hours ago</div>
+          <div className="mt-1 text-xs text-neutral-400">{networkData?.lastChange || "—"}</div>
         </div>
       </div>
       <div className="grid grid-cols-2 gap-4">
@@ -868,16 +970,7 @@ export default function PrivateNexusV1Mockup() {
                 className={[
                   "rounded-lg px-4 py-2 text-sm text-center transition",
                   activeBoard === board
-                    ? [
-                        "bg-gradient-to-r text-black shadow",
-                        board === "Home" && "from-cyan-400 to-blue-500",
-                        board === "Ops" && "from-emerald-400 to-green-500",
-                        board === "Admin" && "from-purple-400 to-indigo-500",
-                        board === "Stacks" && "from-amber-400 to-orange-500",
-                        board === "Emergency" && "from-rose-400 to-pink-500",
-                      ]
-                        .filter(Boolean)
-                        .join(" ")
+                    ? `bg-gradient-to-r text-black shadow ${boardThemes[board].active}`
                     : "bg-neutral-800 text-neutral-200 hover:bg-neutral-700",
                 ].join(" ")}
               >
@@ -907,125 +1000,103 @@ export default function PrivateNexusV1Mockup() {
           {/* Home */}
           {activeBoard === "Home" && homeView}
 
-          {/* Ops — GraphCards + service CPU/RAM cards */}
+          {/* Ops — real system metrics */}
           {activeBoard === "Ops" && (
             <div className="space-y-4">
-              {metricsData.collectedAt && (
-                <div className="text-right text-[11px] text-neutral-600">
-                  Last updated: {new Date(metricsData.collectedAt).toLocaleTimeString()}
-                </div>
-              )}
+              {(() => {
+                const freshness = getMetricsFreshness();
+                return (
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-neutral-600">
+                      System metrics · {metricsData.cpu.length} point{metricsData.cpu.length !== 1 ? "s" : ""} collected
+                    </span>
+                    <span className={freshness.cls}>{freshness.label}</span>
+                  </div>
+                );
+              })()}
               <div className="grid grid-cols-2 gap-4">
                 {[
-                  { key: "cpu",     title: "CPU Load",            value: graphSeries.cpu[graphSeries.cpu.length - 1] || 0,         unit: "%",    colorClass: "border-cyan-400/20 from-cyan-500/10 to-blue-500/5",       stroke: "#22d3ee", data: graphSeries.cpu,     maxValue: 100,  yMarks: ["100%","75%","50%","25%","0%"], progressWidth: `${graphSeries.cpu[graphSeries.cpu.length - 1] || 0}%` },
-                  { key: "memory",  title: "Memory Pressure",     value: graphSeries.memory[graphSeries.memory.length - 1] || 0,   unit: "%",    colorClass: "border-purple-400/20 from-purple-500/10 to-indigo-500/5",  stroke: "#a855f7", data: graphSeries.memory,  maxValue: 100,  yMarks: ["100%","75%","50%","25%","0%"], progressWidth: `${graphSeries.memory[graphSeries.memory.length - 1] || 0}%` },
-                  { key: "storage", title: "Storage Utilisation", value: graphSeries.storage[graphSeries.storage.length - 1] || 0, unit: "%",    colorClass: "border-emerald-400/20 from-emerald-500/10 to-green-500/5", stroke: "#34d399", data: graphSeries.storage, maxValue: 100,  yMarks: ["100%","75%","50%","25%","0%"], progressWidth: `${graphSeries.storage[graphSeries.storage.length - 1] || 0}%` },
-                  { key: "network", title: "Network Throughput",  value: graphSeries.network[graphSeries.network.length - 1] || 0, unit: " Mbps",colorClass: "border-amber-400/20 from-amber-500/10 to-orange-500/5",   stroke: "#f59e0b", data: graphSeries.network, maxValue: 1000, yMarks: ["1Gb","750M","500M","250M","0"],  progressWidth: `${((graphSeries.network[graphSeries.network.length - 1] || 0) / 1000 * 100).toFixed(1)}%` },
-                ].map(({ key, title, value, unit, colorClass, stroke, data, maxValue, yMarks, progressWidth }) => {
-                  // Prefer backend-computed stats; fall back to frontend calculation
-                  const bStats = metricsStats?.[key];
-                  const minValue = bStats?.min  ?? Math.min(...data);
-                  const maxSeen  = bStats?.max  ?? Math.max(...data);
-                  const avgValue = bStats?.avg  ?? Math.round(data.reduce((sum, point) => sum + point, 0) / data.length);
-                  const trend = trendIndicator(key, bStats?.trend);
-                  const paddedMin = Math.max(0, minValue - (maxSeen - minValue || 5) * 0.25);
-                  const paddedMax = Math.min(maxValue, maxSeen + (maxSeen - minValue || 5) * 0.25);
+                  { key: "cpu",     title: "CPU Load",            unit: "%",    colorClass: "border-cyan-400/20 from-cyan-500/10 to-blue-500/5",       stroke: "#22d3ee", data: graphSeries.cpu,     maxValue: 100,  yMarks: ["100%","75%","50%","25%","0%"] },
+                  { key: "memory",  title: "Memory Pressure",     unit: "%",    colorClass: "border-purple-400/20 from-purple-500/10 to-indigo-500/5",  stroke: "#a855f7", data: graphSeries.memory,  maxValue: 100,  yMarks: ["100%","75%","50%","25%","0%"] },
+                  { key: "storage", title: "Storage Utilisation", unit: "%",    colorClass: "border-emerald-400/20 from-emerald-500/10 to-green-500/5", stroke: "#34d399", data: graphSeries.storage, maxValue: 100,  yMarks: ["100%","75%","50%","25%","0%"] },
+                  { key: "network", title: "Network Throughput",  unit: " Mbps",colorClass: "border-amber-400/20 from-amber-500/10 to-orange-500/5",   stroke: "#f59e0b", data: graphSeries.network, maxValue: 1000, yMarks: ["1Gb","750M","500M","250M","0"] },
+                ].map(({ key, title, unit, colorClass, stroke, data, maxValue, yMarks }) => {
+                  const hasData   = data.length >= 2;
+                  const currentVal = data.length ? data[data.length - 1] : null;
+                  const bStats    = metricsStats?.[key];
+                  const minValue  = bStats?.min  ?? (data.length ? Math.min(...data) : null);
+                  const maxSeen   = bStats?.max  ?? (data.length ? Math.max(...data) : null);
+                  const avgValue  = bStats?.avg  ?? (data.length ? Math.round(data.reduce((s, v) => s + v, 0) / data.length) : null);
+                  const trend     = trendIndicator(key, bStats?.trend);
+                  const progressPct = currentVal !== null
+                    ? (key === "network" ? ((currentVal / maxValue) * 100).toFixed(1) : currentVal)
+                    : 0;
+
+                  const paddedMin = minValue !== null ? Math.max(0, minValue - (maxSeen - minValue || 5) * 0.25) : 0;
+                  const paddedMax = maxSeen !== null  ? Math.min(maxValue, maxSeen + (maxSeen - minValue || 5) * 0.25) : maxValue;
                   const paddedRange = paddedMax - paddedMin || 1;
+
                   return (
                     <div key={title} className={`rounded-2xl border ${colorClass} bg-gradient-to-br p-4`}>
                       <div className="mb-2 flex items-center justify-between">
                         <div className="font-semibold">{title}</div>
                         <div className="flex items-center gap-1.5 text-xs text-neutral-300">
-                          <span className={trend.cls}>{trend.arrow}</span>
-                          <span>{value}{unit}</span>
+                          {currentVal !== null && <span className={trend.cls}>{trend.arrow}</span>}
+                          <span>{currentVal !== null ? `${currentVal}${unit}` : "—"}</span>
                         </div>
                       </div>
                       <div className="mb-3 h-2 rounded-full bg-neutral-800">
-                        <div className="h-2 rounded-full" style={{ width: progressWidth, backgroundColor: stroke }} />
+                        <div className="h-2 rounded-full transition-all" style={{ width: `${progressPct}%`, backgroundColor: stroke }} />
                       </div>
-                      <div className="rounded-xl border border-neutral-800/60 bg-neutral-950/40 p-3">
-                        <div className="grid grid-cols-[44px_1fr] gap-3">
-                          <div className="flex h-28 flex-col justify-between text-[10px] leading-none text-neutral-500">
-                            {yMarks.map((mark) => (
-                              <span key={mark}>{mark}</span>
-                            ))}
-                          </div>
 
-                          <div>
-                            <div className="relative h-28">
-                              <div className="absolute inset-0 flex flex-col justify-between">
-                                {yMarks.map((mark) => (
-                                  <div key={mark} className="border-t border-dashed border-neutral-800/80" />
+                      {hasData ? (
+                        <div className="rounded-xl border border-neutral-800/60 bg-neutral-950/40 p-3">
+                          <div className="grid grid-cols-[44px_1fr] gap-3">
+                            <div className="flex h-28 flex-col justify-between text-[10px] leading-none text-neutral-500">
+                              {yMarks.map((mark) => <span key={mark}>{mark}</span>)}
+                            </div>
+                            <div>
+                              <div className="relative h-28">
+                                <div className="absolute inset-0 flex flex-col justify-between">
+                                  {yMarks.map((mark) => <div key={mark} className="border-t border-dashed border-neutral-800/80" />)}
+                                </div>
+                                <svg viewBox="0 0 100 40" className="absolute inset-0 h-full w-full overflow-visible">
+                                  <polyline fill="none" stroke={stroke} strokeWidth="2" points={buildPoints(data, maxValue)} />
+                                  {data.map((point, idx) => {
+                                    const x = (idx / (data.length - 1)) * 100;
+                                    const y = 40 - ((point - paddedMin) / paddedRange) * 40;
+                                    return <circle key={`${title}-${idx}`} cx={x} cy={y} r="1.4" fill={stroke} />;
+                                  })}
+                                </svg>
+                              </div>
+                              <div className="mt-2 grid grid-cols-5 text-[10px] text-neutral-500">
+                                {xLabels.map((label, idx) => (
+                                  <span key={label} className={idx === 0 ? "text-left" : idx === xLabels.length - 1 ? "text-right" : "text-center"}>
+                                    {label}
+                                  </span>
                                 ))}
                               </div>
-
-                              <svg viewBox="0 0 100 40" className="absolute inset-0 h-full w-full overflow-visible">
-                                <polyline fill="none" stroke={stroke} strokeWidth="2" points={buildPoints(data, maxValue)} />
-                                {data.map((point, idx) => {
-                                  const x = (idx / (data.length - 1)) * 100;
-                                  const y = 40 - ((point - paddedMin) / paddedRange) * 40;
-                                  return <circle key={`${title}-${idx}`} cx={x} cy={y} r="1.4" fill={stroke} />;
-                                })}
-                              </svg>
-                            </div>
-
-                            <div className="mt-2 grid grid-cols-5 text-[10px] text-neutral-500">
-                              {xLabels.map((label, idx) => (
-                                <span
-                                  key={label}
-                                  className={
-                                    idx === 0
-                                      ? "text-left"
-                                      : idx === xLabels.length - 1
-                                      ? "text-right"
-                                      : "text-center"
-                                  }
-                                >
-                                  {label}
-                                </span>
-                              ))}
                             </div>
                           </div>
                         </div>
-                      </div>
+                      ) : (
+                        <div className="flex h-28 items-center justify-center rounded-xl border border-neutral-800/60 bg-neutral-950/40 text-xs text-neutral-600">
+                          {data.length === 0 ? "Collecting data…" : "Building history…"}
+                        </div>
+                      )}
 
                       <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-neutral-400">
-                        <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 px-2 py-2">
-                          <div className="text-[10px] uppercase tracking-wide text-neutral-500">Min</div>
-                          <div className="mt-1 font-medium text-neutral-200">{minValue}{unit}</div>
-                        </div>
-                        <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 px-2 py-2">
-                          <div className="text-[10px] uppercase tracking-wide text-neutral-500">Avg</div>
-                          <div className="mt-1 font-medium text-neutral-200">{avgValue}{unit}</div>
-                        </div>
-                        <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 px-2 py-2">
-                          <div className="text-[10px] uppercase tracking-wide text-neutral-500">Max</div>
-                          <div className="mt-1 font-medium text-neutral-200">{maxSeen}{unit}</div>
-                        </div>
+                        {[["Min", minValue], ["Avg", avgValue], ["Max", maxSeen]].map(([label, val]) => (
+                          <div key={label} className="rounded-lg border border-neutral-800 bg-neutral-900/50 px-2 py-2">
+                            <div className="text-[10px] uppercase tracking-wide text-neutral-500">{label}</div>
+                            <div className="mt-1 font-medium text-neutral-200">{val !== null ? `${val}${unit}` : "—"}</div>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   );
                 })}
               </div>
-
-              <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/10 to-green-500/5 p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <div>
-                    <div className="font-semibold">Next Level Ops</div>
-                    <div className="text-xs text-neutral-400">Faster drill-down and smarter control options</div>
-                  </div>
-                  <div className="rounded-full bg-emerald-500/15 px-2 py-1 text-[10px] text-emerald-300">Advanced</div>
-                </div>
-                <div className="grid grid-cols-3 gap-3">
-                  {["Live Metrics", "Service Drilldown", "Anomaly Detection", "Capacity Forecast", "Auto Refresh", "Export Snapshot"].map((opt) => (
-                    <div key={opt} className="cursor-pointer rounded-xl border border-neutral-800 bg-neutral-900/70 p-3 text-sm transition hover:border-emerald-400/30 hover:bg-neutral-800/80">
-                      {opt}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {renderCards(services)}
             </div>
           )}
 
@@ -1045,12 +1116,26 @@ export default function PrivateNexusV1Mockup() {
               <div className="rounded-2xl border border-rose-400/20 bg-gradient-to-r from-rose-500/10 via-pink-500/10 to-purple-500/10 p-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="text-xs uppercase tracking-wider text-rose-300/80">Config Registry</div>
-                    <div className="text-lg font-semibold">Files &amp; Config Control</div>
+                    <div className="text-xs uppercase tracking-wider text-rose-300/80">
+                      {filesStackFilter === "all" ? "Config Registry" : `Stack — ${filesStackFilter}`}
+                    </div>
+                    <div className="text-lg font-semibold">
+                      {filesStackFilter === "all" ? "Files & Config Control" : `Files for ${filesStackFilter}`}
+                    </div>
                   </div>
-                  <span className="rounded-full bg-neutral-900/70 px-3 py-1 text-xs text-neutral-300">
-                    {filesData.filter((f) => f.exists).length}/{filesData.length} on disk
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {filesStackFilter !== "all" && (
+                      <button
+                        onClick={() => setFilesStackFilter("all")}
+                        className="rounded-full border border-rose-400/20 bg-neutral-900/70 px-3 py-1 text-xs text-rose-300/70 hover:text-rose-300"
+                      >
+                        Show all files
+                      </button>
+                    )}
+                    <span className="rounded-full bg-neutral-900/70 px-3 py-1 text-xs text-neutral-300">
+                      {filesData.filter((f) => f.exists).length}/{filesData.length} on disk
+                    </span>
+                  </div>
                 </div>
               </div>
 
@@ -1058,8 +1143,15 @@ export default function PrivateNexusV1Mockup() {
                 <div className="rounded-2xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-200">{filesError}</div>
               )}
 
+              {filesStackFilter !== "all" && getFilesForStack(filesStackFilter).length === 0 && (
+                <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-6 text-center">
+                  <div className="text-sm text-neutral-400">No registered files found for stack <span className="text-neutral-200">{filesStackFilter}</span></div>
+                  <div className="mt-1 text-xs text-neutral-600">Add entries to the file registry to enable config control for this stack.</div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-4">
-                {filesData.map((file) => (
+                {(filesStackFilter === "all" ? filesData : getFilesForStack(filesStackFilter)).map((file) => (
                   <div key={file.id} className={["rounded-2xl border bg-neutral-900/70 p-4 transition", file.exists ? "border-neutral-800 hover:border-rose-400/30" : "border-neutral-800/40 opacity-60"].join(" ")}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
@@ -1257,18 +1349,66 @@ export default function PrivateNexusV1Mockup() {
                 >
                   Save Draft
                 </button>
+                {selectedFile.validatable && (
+                  <button
+                    onClick={validateFileContent}
+                    className={[
+                      "rounded-lg border px-3 py-1 text-[11px] transition",
+                      fileValidation === null
+                        ? "border-neutral-700 bg-neutral-800/80 text-neutral-300 hover:border-neutral-600"
+                        : fileValidation.status === "green"
+                        ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-300"
+                        : fileValidation.status === "amber"
+                        ? "border-amber-400/30 bg-amber-500/10 text-amber-300"
+                        : "border-rose-400/30 bg-rose-500/10 text-rose-300",
+                    ].join(" ")}
+                  >
+                    {fileValidation === null ? "Validate" : fileValidation.status === "green" ? "Valid" : fileValidation.status === "amber" ? "Warnings" : "Errors"}
+                  </button>
+                )}
                 <button
                   onClick={() => setShowSaveLiveConfirm(true)}
-                  className="rounded-lg border border-rose-400/40 bg-rose-500/20 px-3 py-1 text-[11px] font-medium text-rose-200 hover:bg-rose-500/30"
+                  disabled={selectedFile.validatable && (fileValidation === null || fileValidation.status === "red")}
+                  title={
+                    selectedFile.validatable && fileValidation === null
+                      ? "Run Validate before saving live"
+                      : selectedFile.validatable && fileValidation?.status === "red"
+                      ? "Fix validation errors before saving live"
+                      : undefined
+                  }
+                  className="rounded-lg border border-rose-400/40 bg-rose-500/20 px-3 py-1 text-[11px] font-medium text-rose-200 hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Save Live
                 </button>
               </div>
             </div>
 
+            {fileValidation && fileValidation.issues.length > 0 && (
+              <div className={[
+                "shrink-0 rounded-xl border p-3",
+                fileValidation.status === "red" ? "border-rose-400/30 bg-rose-500/10" : "border-amber-400/30 bg-amber-500/10",
+              ].join(" ")}>
+                <div className={["mb-1.5 text-[11px] font-semibold uppercase tracking-wide", fileValidation.status === "red" ? "text-rose-300" : "text-amber-300"].join(" ")}>
+                  {fileValidation.status === "red" ? "Validation errors" : "Warnings"}
+                </div>
+                <ul className="space-y-1">
+                  {fileValidation.issues.map((issue, i) => (
+                    <li key={i} className={["text-xs", issue.level === "error" ? "text-rose-300" : "text-amber-300/80"].join(" ")}>
+                      {issue.level === "error" ? "✕" : "△"} {issue.message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {fileValidation && fileValidation.status === "green" && (
+              <div className="shrink-0 rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+                Validation passed — no issues found
+              </div>
+            )}
+
             <textarea
               value={fileEditorContent}
-              onChange={(e) => { setFileEditorContent(e.target.value); setFileDirty(true); }}
+              onChange={(e) => { setFileEditorContent(e.target.value); setFileDirty(true); setFileValidation(null); }}
               className="min-h-0 flex-1 resize-none rounded-xl border border-neutral-800 bg-neutral-950/80 p-4 font-mono text-xs leading-6 text-neutral-200 outline-none focus:border-rose-400/30"
               spellCheck={false}
             />
@@ -1287,6 +1427,21 @@ export default function PrivateNexusV1Mockup() {
             <div className="mb-3 rounded bg-neutral-800 px-3 py-2 font-mono text-xs text-rose-300">
               {selectedFile.path}
             </div>
+            {fileValidation?.status === "amber" && fileValidation.issues.length > 0 && (
+              <div className="mb-3 rounded border border-amber-400/30 bg-amber-500/10 p-3">
+                <div className="mb-1 text-[11px] font-semibold text-amber-300">Warnings (not blocking)</div>
+                <ul className="space-y-1">
+                  {fileValidation.issues.map((issue, i) => (
+                    <li key={i} className="text-xs text-amber-300/80">△ {issue.message}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {fileValidation?.status === "green" && (
+              <div className="mb-3 rounded border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+                Validation passed
+              </div>
+            )}
             <div className="mb-4 text-xs text-neutral-500">
               A backup of the current live file will be created before writing.
             </div>

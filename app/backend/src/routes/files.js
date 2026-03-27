@@ -4,13 +4,19 @@ import { Router } from "express";
 import { getRegisteredFileById, listRegisteredFiles } from "../filesRegistry.js";
 import { readDraft, writeDraft } from "../drafts.js";
 import { backupLiveFile } from "../fileBackups.js";
+import { validateFile } from "../fileValidator.js";
 
 export const filesRouter = Router();
 
-// GET /api/files — list all registered files with metadata + draft state
-filesRouter.get("/", (_req, res) => {
+// GET /api/files[?stack=<name>] — list registered files; optional stack filter
+filesRouter.get("/", (req, res) => {
   try {
-    res.json(listRegisteredFiles());
+    const { stack } = req.query;
+    let files = listRegisteredFiles();
+    if (stack && typeof stack === "string") {
+      files = files.filter((f) => f.stack === stack);
+    }
+    res.json(files);
   } catch (err) {
     console.error("Failed to list files", err);
     res.status(500).json({ ok: false, error: "Failed to list files" });
@@ -87,6 +93,30 @@ filesRouter.post("/draft", (req, res) => {
   }
 });
 
+// POST /api/files/validate — validate content without writing
+filesRouter.post("/validate", (req, res) => {
+  const { id, content } = req.body || {};
+
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  if (typeof content !== "string") {
+    return res.status(400).json({ ok: false, error: "Content must be a string" });
+  }
+
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+
+  if (!file.validatable) {
+    return res.json({ ok: true, validatable: false, status: "green", issues: [] });
+  }
+
+  const result = validateFile(file.type, content);
+  return res.json({ ok: true, validatable: true, ...result });
+});
+
 // POST /api/files/write — overwrite live file (backup-on-write, whitelist only)
 filesRouter.post("/write", (req, res) => {
   const { id, content, source } = req.body || {};
@@ -104,6 +134,17 @@ filesRouter.post("/write", (req, res) => {
   }
   if (!file.editable) {
     return res.status(403).json({ ok: false, error: "File is not editable" });
+  }
+
+  if (file.validatable) {
+    const validation = validateFile(file.type, content);
+    if (validation.status === "red") {
+      return res.status(422).json({
+        ok: false,
+        error: "Validation errors must be fixed before saving live",
+        validation,
+      });
+    }
   }
 
   try {

@@ -127,9 +127,10 @@ function collectMetrics() {
   lastCollectedAt = new Date().toISOString();
 }
 
-for (let i = 0; i < MAX_POINTS; i++) {
-  collectMetrics();
-}
+// Prime state so the first real collection has valid deltas for CPU and network.
+// Does NOT push any history points — history starts empty until the first real sample.
+sampleCpuPercent();
+sampleNetworkMbps();
 
 setInterval(collectMetrics, 2 * 60 * 1000);
 
