@@ -5,6 +5,7 @@ import { getRegisteredFileById, listRegisteredFiles } from "../filesRegistry.js"
 import { readDraft, writeDraft } from "../drafts.js";
 import { backupLiveFile } from "../fileBackups.js";
 import { validateFile } from "../fileValidator.js";
+import { applyFile } from "../fileApply.js";
 
 export const filesRouter = Router();
 
@@ -168,4 +169,51 @@ filesRouter.post("/write", (req, res) => {
     console.error(`Failed to write live file: ${id}`, err);
     res.status(500).json({ ok: false, error: "Failed to save live file" });
   }
+});
+
+// POST /api/files/apply — apply the saved live file to its stack/service
+filesRouter.post("/apply", (req, res) => {
+  const { id } = req.body || {};
+
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+  if (!file.applyStrategy) {
+    return res.status(400).json({ ok: false, error: "File has no apply strategy defined" });
+  }
+
+  // Belt-and-suspenders: re-validate the live file content before applying
+  if (file.validatable) {
+    try {
+      const content = fs.existsSync(file.path) ? fs.readFileSync(file.path, "utf8") : "";
+      const validation = validateFile(file.type, content);
+      if (validation.status === "red") {
+        return res.status(422).json({
+          ok: false,
+          error: "Live file has validation errors — fix before applying",
+          validation,
+        });
+      }
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: "Failed to read file for pre-apply validation" });
+    }
+  }
+
+  const result = applyFile(file.applyStrategy, file.applyPath);
+  const status = result.ok ? 200 : 500;
+
+  console.log(`[apply] ${file.applyStrategy} → ${file.applyPath} — ${result.ok ? "ok" : "failed"}`);
+
+  return res.status(status).json({
+    ok: result.ok,
+    id,
+    action: file.applyStrategy,
+    target: file.applyPath,
+    output: result.output,
+  });
 });

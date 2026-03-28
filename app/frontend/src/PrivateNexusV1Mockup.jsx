@@ -381,6 +381,8 @@ export default function PrivateNexusV1Mockup() {
   const [showSaveLiveConfirm, setShowSaveLiveConfirm] = useState(false);
   const [fileLiveStatus, setFileLiveStatus] = useState("");
   const [fileValidation, setFileValidation] = useState(null); // null | { status, issues }
+  const [showApplyConfirm, setShowApplyConfirm] = useState(false);
+  const [fileApplyResult, setFileApplyResult] = useState(null); // null | { ok, action, output }
   const [filesStackFilter, setFilesStackFilter] = useState("all");
 
   // -------------------------------------------------------------------------
@@ -445,6 +447,7 @@ export default function PrivateNexusV1Mockup() {
       setFileEditorContent(data.draft?.exists ? data.draft.content : data.content);
       setFileDirty(false);
       setFileValidation(null);
+      setFileApplyResult(null);
       setFileDraftStatus(
         data.draft?.exists
           ? `Draft loaded · ${data.draft.modifiedAt.slice(0, 19).replace("T", " ")}`
@@ -533,6 +536,26 @@ export default function PrivateNexusV1Mockup() {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] validated → ${selectedFile.id} · ${label}`, ...prev]);
     } catch (err) {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
+    }
+  }
+
+  async function applyFileLive() {
+    if (!selectedFile) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/files/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: selectedFile.id }),
+      });
+      const data = await res.json();
+      setFileApplyResult({ ok: data.ok, action: data.action, output: data.output || data.error });
+      const label = data.ok ? "applied" : "apply failed";
+      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${label} → ${selectedFile.id} · ${data.action}`, ...prev]);
+    } catch (err) {
+      setFileApplyResult({ ok: false, action: null, output: err.message });
+      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
+    } finally {
+      setShowApplyConfirm(false);
     }
   }
 
@@ -1380,6 +1403,27 @@ export default function PrivateNexusV1Mockup() {
                 >
                   Save Live
                 </button>
+                {selectedFile.applyStrategy && (
+                  <button
+                    onClick={() => setShowApplyConfirm(true)}
+                    disabled={
+                      fileDirty ||
+                      (selectedFile.validatable && (fileValidation === null || fileValidation.status === "red"))
+                    }
+                    title={
+                      fileDirty
+                        ? "Save live before applying"
+                        : selectedFile.validatable && fileValidation === null
+                        ? "Validate before applying"
+                        : selectedFile.validatable && fileValidation?.status === "red"
+                        ? "Fix validation errors before applying"
+                        : `Apply via ${selectedFile.applyStrategy}`
+                    }
+                    className="rounded-lg border border-blue-400/40 bg-blue-500/15 px-3 py-1 text-[11px] font-medium text-blue-200 hover:bg-blue-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Apply
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1406,12 +1450,72 @@ export default function PrivateNexusV1Mockup() {
               </div>
             )}
 
+            {fileApplyResult && (
+              <div className={[
+                "shrink-0 rounded-xl border p-3",
+                fileApplyResult.ok ? "border-blue-400/30 bg-blue-500/10" : "border-rose-400/30 bg-rose-500/10",
+              ].join(" ")}>
+                <div className={["mb-1.5 text-[11px] font-semibold uppercase tracking-wide", fileApplyResult.ok ? "text-blue-300" : "text-rose-300"].join(" ")}>
+                  {fileApplyResult.ok ? `Applied · ${fileApplyResult.action}` : `Apply failed · ${fileApplyResult.action || "error"}`}
+                </div>
+                <pre className="whitespace-pre-wrap font-mono text-[10px] text-neutral-400">{fileApplyResult.output}</pre>
+              </div>
+            )}
+
             <textarea
               value={fileEditorContent}
               onChange={(e) => { setFileEditorContent(e.target.value); setFileDirty(true); setFileValidation(null); }}
               className="min-h-0 flex-1 resize-none rounded-xl border border-neutral-800 bg-neutral-950/80 p-4 font-mono text-xs leading-6 text-neutral-200 outline-none focus:border-rose-400/30"
               spellCheck={false}
             />
+          </div>
+        </div>
+      )}
+
+      {/* Confirm apply modal */}
+      {showApplyConfirm && selectedFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+          <div className="w-[32rem] rounded-xl border border-blue-400/30 bg-neutral-900 p-6">
+            <div className="mb-2 text-lg font-semibold">Confirm Apply</div>
+            <div className="mb-1 text-sm text-neutral-400">This will apply the saved live file to its stack:</div>
+            <div className="mb-3 rounded bg-neutral-800 px-3 py-2 font-mono text-xs text-blue-300">
+              {selectedFile.path}
+            </div>
+            <div className="mb-1 text-xs text-neutral-500">
+              Strategy: <span className="text-neutral-300">{selectedFile.applyStrategy}</span>
+            </div>
+            <div className="mb-1 text-xs text-neutral-500">
+              Target: <span className="text-neutral-300 font-mono">{selectedFile.applyPath}</span>
+            </div>
+            {selectedFile.applyStrategy === "compose-up" && (
+              <div className="mb-4 mt-3 rounded border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                This will run <span className="font-mono">docker compose up -d</span> — running containers may restart.
+              </div>
+            )}
+            {selectedFile.applyStrategy === "caddy-reload" && (
+              <div className="mb-4 mt-3 rounded border border-blue-400/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-300">
+                This will hot-reload Caddy — no downtime expected.
+              </div>
+            )}
+            {fileValidation?.status === "green" && (
+              <div className="mb-4 rounded border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+                Validation passed
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowApplyConfirm(false)}
+                className="rounded bg-neutral-700 px-3 py-1 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={applyFileLive}
+                className="rounded bg-blue-600 px-3 py-1 text-sm font-semibold text-white hover:bg-blue-500"
+              >
+                Apply Now
+              </button>
+            </div>
           </div>
         </div>
       )}

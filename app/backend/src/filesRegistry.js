@@ -12,6 +12,8 @@ const REGISTRY = [
     editable: true,
     validatable: true,
     primary: true,
+    applyStrategy: "caddy-reload",
+    applyPath: "/etc/caddy/Caddyfile",
   },
   {
     id: "privatenexus-compose",
@@ -22,6 +24,8 @@ const REGISTRY = [
     editable: true,
     validatable: true,
     primary: true,
+    applyStrategy: "compose-up",
+    applyPath: "/root/privatenexus/compose/docker-compose.yml",
   },
   {
     id: "privatenexus-frontend-env",
@@ -32,6 +36,8 @@ const REGISTRY = [
     editable: true,
     validatable: true,
     primary: false,
+    applyStrategy: "compose-up",
+    applyPath: "/root/privatenexus/compose/docker-compose.yml",
   },
   {
     id: "privatenexus-backend-server",
@@ -42,6 +48,8 @@ const REGISTRY = [
     editable: true,
     validatable: false,
     primary: false,
+    applyStrategy: null,
+    applyPath: null,
   },
 ];
 
