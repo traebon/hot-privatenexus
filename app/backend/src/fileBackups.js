@@ -28,3 +28,46 @@ export function backupLiveFile(id, originalPath, content) {
     size: stats.size,
   };
 }
+
+export function listBackups(fileId) {
+  ensureBackupsDir();
+  let files;
+  try {
+    files = fs.readdirSync(BACKUPS_DIR);
+  } catch {
+    return [];
+  }
+  const prefix = `${fileId}__`;
+  return files
+    .filter((f) => f.startsWith(prefix) && f.endsWith(".bak"))
+    .map((fileName) => {
+      const filePath = path.join(BACKUPS_DIR, fileName);
+      try {
+        const stats = fs.statSync(filePath);
+        return { fileName, createdAt: stats.mtime.toISOString(), size: stats.size };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+}
+
+export function readBackup(fileName) {
+  if (
+    !fileName ||
+    typeof fileName !== "string" ||
+    fileName.includes("/") ||
+    fileName.includes("\\") ||
+    !fileName.endsWith(".bak")
+  ) {
+    return null;
+  }
+  const filePath = path.join(BACKUPS_DIR, fileName);
+  if (!filePath.startsWith(BACKUPS_DIR + path.sep)) return null;
+  try {
+    return fs.readFileSync(filePath, "utf8");
+  } catch {
+    return null;
+  }
+}

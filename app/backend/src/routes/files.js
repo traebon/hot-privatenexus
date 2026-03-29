@@ -3,7 +3,7 @@ import path from "path";
 import { Router } from "express";
 import { getRegisteredFileById, listRegisteredFiles } from "../filesRegistry.js";
 import { readDraft, writeDraft } from "../drafts.js";
-import { backupLiveFile } from "../fileBackups.js";
+import { backupLiveFile, listBackups, readBackup } from "../fileBackups.js";
 import { validateFile } from "../fileValidator.js";
 import { applyFile } from "../fileApply.js";
 import { recordApply, getApplyLog } from "../fileApplyLog.js";
@@ -226,6 +226,43 @@ filesRouter.post("/apply", (req, res) => {
     target: file.applyPath,
     output: result.output,
   });
+});
+
+// GET /api/files/backups?id=<fileId> — list backups for a registered file, newest first
+filesRouter.get("/backups", (req, res) => {
+  const { id } = req.query;
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+  const backups = listBackups(id);
+  res.json({ ok: true, backups });
+});
+
+// GET /api/files/backups/read?id=<fileId>&file=<fileName> — read a single backup
+filesRouter.get("/backups/read", (req, res) => {
+  const { id, file: fileName } = req.query;
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  if (!fileName || typeof fileName !== "string") {
+    return res.status(400).json({ ok: false, error: "Backup file name is required" });
+  }
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+  if (!fileName.startsWith(`${id}__`)) {
+    return res.status(403).json({ ok: false, error: "Backup does not belong to this file" });
+  }
+  const content = readBackup(fileName);
+  if (content === null) {
+    return res.status(404).json({ ok: false, error: "Backup not found" });
+  }
+  res.json({ ok: true, fileName, content });
 });
 
 // GET /api/files/apply-log[?fileId=<id>] — return apply history

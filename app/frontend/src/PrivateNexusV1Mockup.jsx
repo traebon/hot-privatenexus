@@ -398,6 +398,8 @@ export default function PrivateNexusV1Mockup() {
   const [fileApplyLog, setFileApplyLog] = useState([]); // last N applies for the open file
   const [filesStackFilter, setFilesStackFilter] = useState("all");
   const [applyLogData, setApplyLogData] = useState([]);
+  const [fileBackups, setFileBackups] = useState([]); // backup metadata for the open file
+  const [selectedBackup, setSelectedBackup] = useState(null); // { fileName, content }
 
   // -------------------------------------------------------------------------
   // API — backup and network come from the backend; app/service data is static
@@ -484,6 +486,8 @@ export default function PrivateNexusV1Mockup() {
       setFileValidation(null);
       setFileApplyResult(null);
       setFileApplyLog([]);
+      setFileBackups([]);
+      setSelectedBackup(null);
       if (data.draft?.exists) {
         const draftStale = new Date(data.draft.modifiedAt) < new Date(data.modifiedAt);
         setFileDraftStatus(
@@ -496,6 +500,7 @@ export default function PrivateNexusV1Mockup() {
       setFileViewerOpen(true);
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] opened file → ${data.fileName}`, ...prev]);
       loadApplyLog(id);
+      loadFileBackups(id);
     } catch (err) {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
     }
@@ -547,6 +552,7 @@ export default function PrivateNexusV1Mockup() {
       const fl = await fetch(`${API_BASE}/api/files`);
       const flData = await fl.json();
       setFilesData(Array.isArray(flData) ? flData : []);
+      loadFileBackups(selectedFile.id);
     } catch (err) {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
       setShowSaveLiveConfirm(false);
@@ -602,6 +608,36 @@ export default function PrivateNexusV1Mockup() {
       setShowApplyConfirm(false);
       loadApplyLog(fileId);
       loadAllApplyLog();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // v0.6.0-a — backup browser helpers
+  // -------------------------------------------------------------------------
+  async function loadFileBackups(id) {
+    try {
+      const res = await fetch(`${API_BASE}/api/files/backups?id=${encodeURIComponent(id)}`);
+      const data = await res.json();
+      if (res.ok) setFileBackups(data.backups || []);
+    } catch {
+      // non-critical
+    }
+  }
+
+  async function openBackupContent(fileName) {
+    if (!selectedFile) return;
+    if (selectedBackup?.fileName === fileName) {
+      setSelectedBackup(null);
+      return;
+    }
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/files/backups/read?id=${encodeURIComponent(selectedFile.id)}&file=${encodeURIComponent(fileName)}`
+      );
+      const data = await res.json();
+      if (res.ok) setSelectedBackup({ fileName, content: data.content });
+    } catch (err) {
+      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
     }
   }
 
@@ -1587,6 +1623,56 @@ export default function PrivateNexusV1Mockup() {
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {fileBackups.length > 0 && (
+              <div className="shrink-0 rounded-xl border border-neutral-800 bg-neutral-900/60 p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-[10px] uppercase tracking-wide text-neutral-500">
+                    Backups ({fileBackups.length})
+                  </div>
+                  {selectedBackup && (
+                    <button
+                      onClick={() => setSelectedBackup(null)}
+                      className="text-[10px] text-neutral-500 hover:text-neutral-300"
+                    >
+                      Close preview
+                    </button>
+                  )}
+                </div>
+                <div className="space-y-0.5">
+                  {fileBackups.map((backup) => (
+                    <div
+                      key={backup.fileName}
+                      className={[
+                        "flex items-center gap-2 rounded px-2 py-1 text-[11px]",
+                        selectedBackup?.fileName === backup.fileName ? "bg-neutral-800" : "",
+                      ].join(" ")}
+                    >
+                      <span className="flex-1 text-neutral-400">
+                        {backup.createdAt.slice(0, 19).replace("T", " ")}
+                      </span>
+                      <span className="text-neutral-600">{backup.size} B</span>
+                      <button
+                        onClick={() => openBackupContent(backup.fileName)}
+                        className="text-[10px] text-blue-400 hover:text-blue-300"
+                      >
+                        {selectedBackup?.fileName === backup.fileName ? "Hide" : "View"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                {selectedBackup && (
+                  <div className="mt-3 border-t border-neutral-800 pt-3">
+                    <div className="mb-1.5 font-mono text-[10px] text-neutral-600">
+                      {selectedBackup.fileName}
+                    </div>
+                    <pre className="max-h-52 overflow-auto rounded bg-neutral-950 p-3 font-mono text-[10px] leading-5 text-neutral-400">
+                      {selectedBackup.content}
+                    </pre>
+                  </div>
+                )}
               </div>
             )}
 
