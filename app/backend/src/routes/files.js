@@ -6,6 +6,7 @@ import { readDraft, writeDraft } from "../drafts.js";
 import { backupLiveFile } from "../fileBackups.js";
 import { validateFile } from "../fileValidator.js";
 import { applyFile } from "../fileApply.js";
+import { recordApply, getApplyLog } from "../fileApplyLog.js";
 
 export const filesRouter = Router();
 
@@ -209,6 +210,15 @@ filesRouter.post("/apply", (req, res) => {
 
   console.log(`[apply] ${file.applyStrategy} → ${file.applyPath} — ${result.ok ? "ok" : "failed"}`);
 
+  recordApply({
+    fileId: file.id,
+    strategy: file.applyStrategy,
+    target: file.applyPath,
+    timestamp: new Date().toISOString(),
+    ok: result.ok,
+    output: result.output || "",
+  });
+
   return res.status(status).json({
     ok: result.ok,
     id,
@@ -216,4 +226,17 @@ filesRouter.post("/apply", (req, res) => {
     target: file.applyPath,
     output: result.output,
   });
+});
+
+// GET /api/files/apply-log[?fileId=<id>] — return apply history
+filesRouter.get("/apply-log", (req, res) => {
+  const { fileId } = req.query;
+  const fileIdStr = typeof fileId === "string" && fileId.length > 0 ? fileId : undefined;
+  try {
+    const log = getApplyLog(fileIdStr);
+    res.json({ ok: true, log });
+  } catch (err) {
+    console.error("Failed to read apply log", err);
+    res.status(500).json({ ok: false, error: "Failed to read apply log" });
+  }
 });

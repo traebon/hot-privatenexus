@@ -1,7 +1,10 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 export default function PrivateNexusV1Mockup() {
   const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:3001";
+
+  // Ref so parent (applyFileLive) can trigger an immediate stacks refresh
+  const stacksRefreshRef = useRef(null);
 
   // -------------------------------------------------------------------------
   // Inner component — live Docker data, fully self-contained
@@ -52,9 +55,13 @@ export default function PrivateNexusV1Mockup() {
     };
 
     useEffect(() => {
+      stacksRefreshRef.current = loadStacks;
       loadStacks();
       const interval = setInterval(loadStacks, 15000);
-      return () => clearInterval(interval);
+      return () => {
+        clearInterval(interval);
+        stacksRefreshRef.current = null;
+      };
     }, []);
 
     // Auto-scroll logs to bottom
@@ -174,6 +181,11 @@ export default function PrivateNexusV1Mockup() {
                         <span className={["rounded-full px-2 py-0.5 text-[10px]", hasDraft ? "bg-amber-500/15 text-amber-300" : "bg-rose-500/10 text-rose-300/70"].join(" ")}>
                           {stackFiles.length} file{stackFiles.length !== 1 ? "s" : ""}{hasDraft ? " · draft" : ""}
                         </span>
+                        {stackNeedsApply(p.project) && (
+                          <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-300">
+                            Pending apply
+                          </span>
+                        )}
                         <button
                           onClick={() => editStackConfig(p.project)}
                           className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-300 hover:bg-rose-500/20"
@@ -383,7 +395,9 @@ export default function PrivateNexusV1Mockup() {
   const [fileValidation, setFileValidation] = useState(null); // null | { status, issues }
   const [showApplyConfirm, setShowApplyConfirm] = useState(false);
   const [fileApplyResult, setFileApplyResult] = useState(null); // null | { ok, action, output }
+  const [fileApplyLog, setFileApplyLog] = useState([]); // last N applies for the open file
   const [filesStackFilter, setFilesStackFilter] = useState("all");
+  const [applyLogData, setApplyLogData] = useState([]);
 
   // -------------------------------------------------------------------------
   // API — backup and network come from the backend; app/service data is static
@@ -436,7 +450,28 @@ export default function PrivateNexusV1Mockup() {
         setFilesError("");
       })
       .catch(() => setFilesError("Failed to load file registry"));
+    loadAllApplyLog();
   }, [API_BASE]);
+
+  async function loadApplyLog(id) {
+    try {
+      const res = await fetch(`${API_BASE}/api/files/apply-log?fileId=${encodeURIComponent(id)}`);
+      const data = await res.json();
+      if (res.ok) setFileApplyLog((data.log || []).slice(-5).reverse());
+    } catch {
+      // non-critical — silently ignore
+    }
+  }
+
+  async function loadAllApplyLog() {
+    try {
+      const res = await fetch(`${API_BASE}/api/files/apply-log`);
+      const data = await res.json();
+      setApplyLogData([...(data.log || [])].reverse());
+    } catch (err) {
+      console.error("Failed to load apply log", err);
+    }
+  }
 
   async function openFileById(id) {
     try {
@@ -448,6 +483,7 @@ export default function PrivateNexusV1Mockup() {
       setFileDirty(false);
       setFileValidation(null);
       setFileApplyResult(null);
+      setFileApplyLog([]);
       setFileDraftStatus(
         data.draft?.exists
           ? `Draft loaded · ${data.draft.modifiedAt.slice(0, 19).replace("T", " ")}`
@@ -455,6 +491,7 @@ export default function PrivateNexusV1Mockup() {
       );
       setFileViewerOpen(true);
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] opened file → ${data.fileName}`, ...prev]);
+      loadApplyLog(id);
     } catch (err) {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
     }
@@ -541,22 +578,44 @@ export default function PrivateNexusV1Mockup() {
 
   async function applyFileLive() {
     if (!selectedFile) return;
+    const fileId = selectedFile.id;
     try {
       const res = await fetch(`${API_BASE}/api/files/apply`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: selectedFile.id }),
+        body: JSON.stringify({ id: fileId }),
       });
       const data = await res.json();
       setFileApplyResult({ ok: data.ok, action: data.action, output: data.output || data.error });
       const label = data.ok ? "applied" : "apply failed";
-      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${label} → ${selectedFile.id} · ${data.action}`, ...prev]);
+      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${label} → ${fileId} · ${data.action}`, ...prev]);
+      // Refresh stacks immediately after a successful apply
+      if (data.ok) stacksRefreshRef.current?.();
     } catch (err) {
       setFileApplyResult({ ok: false, action: null, output: err.message });
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
     } finally {
       setShowApplyConfirm(false);
+      loadApplyLog(fileId);
+      loadAllApplyLog();
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // A6 — apply log helpers
+  // -------------------------------------------------------------------------
+  function getLatestApply(fileId) {
+    return applyLogData.find((e) => e.fileId === fileId) || null;
+  }
+  function fileNeedsApply(file) {
+    if (!file?.modifiedAt) return false;
+    const latest = getLatestApply(file.id);
+    if (!latest) return true;
+    if (!latest.ok) return true;
+    return new Date(file.modifiedAt) > new Date(latest.timestamp);
+  }
+  function stackNeedsApply(stackName) {
+    return filesData.some((f) => f.stack === stackName && fileNeedsApply(f));
   }
 
   // -------------------------------------------------------------------------
@@ -803,6 +862,29 @@ export default function PrivateNexusV1Mockup() {
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-4">
+        <div className="mb-3 text-sm font-semibold text-neutral-300">Recent Applies</div>
+        {applyLogData.length === 0 ? (
+          <div className="text-xs text-neutral-500">No apply activity yet</div>
+        ) : (
+          <div className="space-y-2 text-xs">
+            {applyLogData.slice(0, 5).map((entry, i) => (
+              <div key={i} className="flex justify-between">
+                <div>
+                  <span className={entry.ok ? "text-emerald-300" : "text-rose-300"}>
+                    {entry.ok ? "✓" : "✕"}
+                  </span>{" "}
+                  {entry.fileId}
+                </div>
+                <div className="text-neutral-500">
+                  {new Date(entry.timestamp).toLocaleTimeString()}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -1198,6 +1280,31 @@ export default function PrivateNexusV1Mockup() {
                       </div>
                     )}
 
+                    {(() => {
+                      const latest = getLatestApply(file.id);
+                      const needsApply = fileNeedsApply(file);
+                      return (
+                        <div className="mt-2 space-y-1 text-xs">
+                          {!latest && (
+                            <div className="text-neutral-400">Never applied</div>
+                          )}
+                          {latest && (
+                            <div className="flex items-center gap-2">
+                              <span className={latest.ok ? "text-emerald-300" : "text-rose-300"}>
+                                {latest.ok ? "Applied" : "Failed"}
+                              </span>
+                              <span className="text-neutral-500">
+                                {new Date(latest.timestamp).toLocaleString()}
+                              </span>
+                            </div>
+                          )}
+                          {latest && needsApply && (
+                            <div className="text-amber-300">Needs apply</div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         disabled={!file.exists}
@@ -1459,6 +1566,25 @@ export default function PrivateNexusV1Mockup() {
                   {fileApplyResult.ok ? `Applied · ${fileApplyResult.action}` : `Apply failed · ${fileApplyResult.action || "error"}`}
                 </div>
                 <pre className="whitespace-pre-wrap font-mono text-[10px] text-neutral-400">{fileApplyResult.output}</pre>
+              </div>
+            )}
+
+            {fileApplyLog.length > 0 && (
+              <div className="shrink-0 rounded-xl border border-neutral-800 bg-neutral-900/60 p-3">
+                <div className="mb-2 text-[10px] uppercase tracking-wide text-neutral-500">Apply History</div>
+                <div className="space-y-1">
+                  {fileApplyLog.map((entry, i) => (
+                    <div key={i} className="flex items-center gap-2 text-[11px]">
+                      <span className={entry.ok ? "text-emerald-400" : "text-rose-400"}>{entry.ok ? "✓" : "✕"}</span>
+                      <span className="text-neutral-300">{entry.strategy}</span>
+                      <span className="text-neutral-600">·</span>
+                      <span className="text-neutral-500">{entry.timestamp.slice(0, 19).replace("T", " ")}</span>
+                      {!entry.ok && entry.output && (
+                        <span className="truncate text-rose-400/70" title={entry.output}>{entry.output.slice(0, 60)}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
