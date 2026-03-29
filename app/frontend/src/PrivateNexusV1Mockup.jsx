@@ -484,11 +484,15 @@ export default function PrivateNexusV1Mockup() {
       setFileValidation(null);
       setFileApplyResult(null);
       setFileApplyLog([]);
-      setFileDraftStatus(
-        data.draft?.exists
-          ? `Draft loaded · ${data.draft.modifiedAt.slice(0, 19).replace("T", " ")}`
-          : "No draft yet"
-      );
+      if (data.draft?.exists) {
+        const draftStale = new Date(data.draft.modifiedAt) < new Date(data.modifiedAt);
+        setFileDraftStatus(
+          `Draft loaded · ${data.draft.modifiedAt.slice(0, 19).replace("T", " ")}` +
+            (draftStale ? " · ⚠ live file is newer" : "")
+        );
+      } else {
+        setFileDraftStatus("No draft yet");
+      }
       setFileViewerOpen(true);
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] opened file → ${data.fileName}`, ...prev]);
       loadApplyLog(id);
@@ -1515,13 +1519,11 @@ export default function PrivateNexusV1Mockup() {
                     onClick={() => setShowApplyConfirm(true)}
                     disabled={
                       fileDirty ||
-                      (selectedFile.validatable && (fileValidation === null || fileValidation.status === "red"))
+                      (selectedFile.validatable && fileValidation?.status === "red")
                     }
                     title={
                       fileDirty
                         ? "Save live before applying"
-                        : selectedFile.validatable && fileValidation === null
-                        ? "Validate before applying"
                         : selectedFile.validatable && fileValidation?.status === "red"
                         ? "Fix validation errors before applying"
                         : `Apply via ${selectedFile.applyStrategy}`

@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOG_PATH = path.join(__dirname, "../data/apply-log.json");
+const LOG_TMP = LOG_PATH + ".tmp";
 const MAX_ENTRIES = 200;
 
 function readLog() {
@@ -23,7 +24,8 @@ export function recordApply({ fileId, strategy, target, timestamp, ok, output })
   log.push({ fileId, strategy, target, timestamp, ok, output });
   const trimmed = log.slice(-MAX_ENTRIES);
   try {
-    fs.writeFileSync(LOG_PATH, JSON.stringify(trimmed, null, 2));
+    fs.writeFileSync(LOG_TMP, JSON.stringify(trimmed, null, 2));
+    fs.renameSync(LOG_TMP, LOG_PATH);
   } catch (err) {
     console.error("[apply-log] Failed to write apply log", err);
   }
