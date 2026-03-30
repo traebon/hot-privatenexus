@@ -405,6 +405,7 @@ export default function PrivateNexusV1Mockup() {
   const [restoreResult, setRestoreResult] = useState(null); // null | { ok, safetyBackup, restoredFrom, error }
   const [showRestoreApplyConfirm, setShowRestoreApplyConfirm] = useState(false);
   const [restoreApplyResult, setRestoreApplyResult] = useState(null); // null | { ok, phase, restoredFrom, safetyBackup, apply, error }
+  const [lkg, setLkg] = useState(null); // null | { fileName, markedAt }
 
   // -------------------------------------------------------------------------
   // API — backup and network come from the backend; app/service data is static
@@ -496,6 +497,7 @@ export default function PrivateNexusV1Mockup() {
       setDiffMode("draft-live");
       setRestoreResult(null);
       setRestoreApplyResult(null);
+      setLkg(null);
       if (data.draft?.exists) {
         const draftStale = new Date(data.draft.modifiedAt) < new Date(data.modifiedAt);
         setFileDraftStatus(
@@ -509,6 +511,7 @@ export default function PrivateNexusV1Mockup() {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] opened file → ${data.fileName}`, ...prev]);
       loadApplyLog(id);
       loadFileBackups(id);
+      loadKnownGood(id);
     } catch (err) {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
     }
@@ -637,6 +640,31 @@ export default function PrivateNexusV1Mockup() {
     }
   }
 
+  async function loadKnownGood(id) {
+    try {
+      const res = await fetch(`${API_BASE}/api/files/backups/known-good?id=${encodeURIComponent(id)}`);
+      const data = await res.json();
+      if (res.ok) setLkg(data.knownGood || null);
+    } catch {
+      // non-critical
+    }
+  }
+
+  async function markAsKnownGood(fileName) {
+    if (!selectedFile) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/files/backups/mark-known-good`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: selectedFile.id, file: fileName }),
+      });
+      const data = await res.json();
+      if (res.ok) setLkg(data.knownGood);
+    } catch {
+      // non-critical
+    }
+  }
+
   async function openBackupContent(fileName) {
     if (!selectedFile) return;
     if (selectedBackup?.fileName === fileName) {
@@ -694,6 +722,7 @@ export default function PrivateNexusV1Mockup() {
       setSelectedBackup(null);
       setDiffMode("draft-live");
       loadFileBackups(selectedFile.id);
+      loadKnownGood(selectedFile.id);
 
       // Refresh file list so metadata badges update
       const fl = await fetch(`${API_BASE}/api/files`);
@@ -746,6 +775,7 @@ export default function PrivateNexusV1Mockup() {
       setSelectedBackup(null);
       setDiffMode("draft-live");
       loadFileBackups(fileId);
+      loadKnownGood(fileId);
       loadApplyLog(fileId);
       loadAllApplyLog();
 
@@ -1730,6 +1760,40 @@ export default function PrivateNexusV1Mockup() {
               </div>
             </div>
 
+            {/* v0.7.0-a — LKG trusted baseline bar */}
+            {lkg && (
+              <div className="shrink-0 flex items-center gap-3 rounded-xl border border-emerald-400/20 bg-emerald-500/8 px-3 py-2">
+                <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                  <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
+                    Trusted baseline
+                  </span>
+                  <span className="truncate font-mono text-[11px] text-emerald-200/70">{lkg.fileName}</span>
+                </div>
+                <div className="flex shrink-0 gap-1.5">
+                  <button
+                    onClick={async () => {
+                      await openBackupContent(lkg.fileName);
+                      setShowRestoreConfirm(true);
+                    }}
+                    className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/20"
+                  >
+                    Restore LKG
+                  </button>
+                  {selectedFile.applyStrategy && (
+                    <button
+                      onClick={async () => {
+                        await openBackupContent(lkg.fileName);
+                        setShowRestoreApplyConfirm(true);
+                      }}
+                      className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/20"
+                    >
+                      Restore & Apply LKG
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Scrollable panels + editor — fills remaining modal height */}
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
 
@@ -1878,6 +1942,11 @@ export default function PrivateNexusV1Mockup() {
                       <span className="flex-1 text-neutral-400">
                         {backup.createdAt.slice(0, 19).replace("T", " ")}
                       </span>
+                      {lkg?.fileName === backup.fileName && (
+                        <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
+                          LKG
+                        </span>
+                      )}
                       <span className="text-neutral-600">{backup.size} B</span>
                       <button
                         onClick={() => openBackupContent(backup.fileName)}
@@ -1909,6 +1978,19 @@ export default function PrivateNexusV1Mockup() {
                           Restore & Apply
                         </button>
                       )}
+                      <button
+                        onClick={() => markAsKnownGood(backup.fileName)}
+                        className={[
+                          "text-[10px] transition",
+                          lkg?.fileName === backup.fileName
+                            ? "text-emerald-400 cursor-default"
+                            : "text-neutral-600 hover:text-emerald-400",
+                        ].join(" ")}
+                        title={lkg?.fileName === backup.fileName ? "This is the current LKG" : "Mark as Last-Known-Good"}
+                        disabled={lkg?.fileName === backup.fileName}
+                      >
+                        {lkg?.fileName === backup.fileName ? "LKG ✓" : "Mark LKG"}
+                      </button>
                     </div>
                   ))}
                 </div>

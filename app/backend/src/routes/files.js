@@ -7,6 +7,7 @@ import { backupLiveFile, listBackups, readBackup } from "../fileBackups.js";
 import { validateFile } from "../fileValidator.js";
 import { applyFile } from "../fileApply.js";
 import { recordApply, getApplyLog } from "../fileApplyLog.js";
+import { markKnownGood, getKnownGood } from "../fileKnownGood.js";
 
 export const filesRouter = Router();
 
@@ -407,6 +408,45 @@ filesRouter.post("/restore-and-apply", (req, res) => {
     },
     file: { path: file.path, modifiedAt: stats.mtime.toISOString(), size: stats.size },
   });
+});
+
+// GET /api/files/backups/known-good?id=<fileId> — return LKG entry for a file
+filesRouter.get("/backups/known-good", (req, res) => {
+  const { id } = req.query;
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+  const knownGood = getKnownGood(id);
+  res.json({ ok: true, knownGood });
+});
+
+// POST /api/files/backups/mark-known-good — mark a backup as Last-Known-Good
+filesRouter.post("/backups/mark-known-good", (req, res) => {
+  const { id, file: fileName } = req.body || {};
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  if (!fileName || typeof fileName !== "string") {
+    return res.status(400).json({ ok: false, error: "Backup file name is required" });
+  }
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+  if (!fileName.startsWith(`${id}__`) || !fileName.endsWith(".bak")) {
+    return res.status(403).json({ ok: false, error: "Backup does not belong to this file" });
+  }
+  // Confirm the backup actually exists before marking
+  const content = readBackup(fileName);
+  if (content === null) {
+    return res.status(404).json({ ok: false, error: "Backup not found" });
+  }
+  const knownGood = markKnownGood(id, fileName);
+  res.json({ ok: true, knownGood });
 });
 
 // GET /api/files/apply-log[?fileId=<id>] — return apply history
