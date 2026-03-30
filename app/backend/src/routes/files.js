@@ -265,6 +265,150 @@ filesRouter.get("/backups/read", (req, res) => {
   res.json({ ok: true, fileName, content });
 });
 
+// POST /api/files/restore — restore a backup to live (safety-backup current live first)
+filesRouter.post("/restore", (req, res) => {
+  const { id, file: backupFileName } = req.body || {};
+
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  if (!backupFileName || typeof backupFileName !== "string") {
+    return res.status(400).json({ ok: false, error: "Backup file name is required" });
+  }
+
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+  if (!file.editable) {
+    return res.status(403).json({ ok: false, error: "File is not editable" });
+  }
+
+  // Guard: backup must belong to this file id (same prefix check as backups/read)
+  if (!backupFileName.startsWith(`${id}__`) || !backupFileName.endsWith(".bak")) {
+    return res.status(403).json({ ok: false, error: "Backup does not belong to this file" });
+  }
+
+  // Read backup content (readBackup also guards against path traversal)
+  const backupContent = readBackup(backupFileName);
+  if (backupContent === null) {
+    return res.status(404).json({ ok: false, error: "Backup not found" });
+  }
+
+  try {
+    // Safety backup of current live before overwrite
+    const currentContent = fs.existsSync(file.path)
+      ? fs.readFileSync(file.path, "utf8")
+      : "";
+    const safetyBackup = backupLiveFile(id, file.path, currentContent);
+
+    // Write backup content to live path
+    fs.writeFileSync(file.path, backupContent, "utf8");
+
+    const stats = fs.statSync(file.path);
+    console.log(`[restore] ${id} ← ${backupFileName}`);
+
+    return res.json({
+      ok: true,
+      id,
+      restoredFrom: backupFileName,
+      safetyBackup: { fileName: safetyBackup.fileName, size: safetyBackup.size },
+      file: { path: file.path, modifiedAt: stats.mtime.toISOString(), size: stats.size },
+    });
+  } catch (err) {
+    console.error(`Failed to restore ${id} from ${backupFileName}`, err);
+    return res.status(500).json({ ok: false, error: "Restore failed" });
+  }
+});
+
+// POST /api/files/restore-and-apply — restore backup to live then run apply strategy
+filesRouter.post("/restore-and-apply", (req, res) => {
+  const { id, file: backupFileName } = req.body || {};
+
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  if (!backupFileName || typeof backupFileName !== "string") {
+    return res.status(400).json({ ok: false, error: "Backup file name is required" });
+  }
+
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+  if (!file.editable) {
+    return res.status(403).json({ ok: false, error: "File is not editable" });
+  }
+  if (!file.applyStrategy) {
+    return res.status(400).json({ ok: false, error: "File has no apply strategy — use restore instead" });
+  }
+  if (!backupFileName.startsWith(`${id}__`) || !backupFileName.endsWith(".bak")) {
+    return res.status(403).json({ ok: false, error: "Backup does not belong to this file" });
+  }
+
+  const backupContent = readBackup(backupFileName);
+  if (backupContent === null) {
+    return res.status(404).json({ ok: false, error: "Backup not found" });
+  }
+
+  // Phase 1 — safety backup + restore
+  let safetyBackup;
+  try {
+    const currentContent = fs.existsSync(file.path)
+      ? fs.readFileSync(file.path, "utf8")
+      : "";
+    safetyBackup = backupLiveFile(id, file.path, currentContent);
+    fs.writeFileSync(file.path, backupContent, "utf8");
+    console.log(`[restore-and-apply] restored ${id} ← ${backupFileName}`);
+  } catch (err) {
+    console.error(`Failed to restore ${id}`, err);
+    return res.status(500).json({ ok: false, error: "Restore phase failed", phase: "restore" });
+  }
+
+  // Phase 2 — pre-apply validation (if validatable)
+  if (file.validatable) {
+    const validation = validateFile(file.type, backupContent);
+    if (validation.status === "red") {
+      return res.status(422).json({
+        ok: false,
+        phase: "validate",
+        error: "Restored content has validation errors — apply skipped",
+        safetyBackup: { fileName: safetyBackup.fileName, size: safetyBackup.size },
+        validation,
+      });
+    }
+  }
+
+  // Phase 3 — apply
+  const applyResult = applyFile(file.applyStrategy, file.applyPath);
+  console.log(`[restore-and-apply] apply ${file.applyStrategy} → ${file.applyPath} — ${applyResult.ok ? "ok" : "failed"}`);
+
+  recordApply({
+    fileId: file.id,
+    strategy: file.applyStrategy,
+    target: file.applyPath,
+    timestamp: new Date().toISOString(),
+    ok: applyResult.ok,
+    output: applyResult.output || "",
+  });
+
+  const stats = fs.statSync(file.path);
+  return res.status(applyResult.ok ? 200 : 500).json({
+    ok: applyResult.ok,
+    id,
+    phase: applyResult.ok ? "done" : "apply",
+    restoredFrom: backupFileName,
+    safetyBackup: { fileName: safetyBackup.fileName, size: safetyBackup.size },
+    apply: {
+      ok: applyResult.ok,
+      action: file.applyStrategy,
+      target: file.applyPath,
+      output: applyResult.output,
+    },
+    file: { path: file.path, modifiedAt: stats.mtime.toISOString(), size: stats.size },
+  });
+});
+
 // GET /api/files/apply-log[?fileId=<id>] — return apply history
 filesRouter.get("/apply-log", (req, res) => {
   const { fileId } = req.query;

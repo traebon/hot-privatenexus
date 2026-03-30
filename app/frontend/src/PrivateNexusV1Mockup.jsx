@@ -400,6 +400,11 @@ export default function PrivateNexusV1Mockup() {
   const [applyLogData, setApplyLogData] = useState([]);
   const [fileBackups, setFileBackups] = useState([]); // backup metadata for the open file
   const [selectedBackup, setSelectedBackup] = useState(null); // { fileName, content }
+  const [diffMode, setDiffMode] = useState("draft-live"); // "draft-live" | "live-backup"
+  const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
+  const [restoreResult, setRestoreResult] = useState(null); // null | { ok, safetyBackup, restoredFrom, error }
+  const [showRestoreApplyConfirm, setShowRestoreApplyConfirm] = useState(false);
+  const [restoreApplyResult, setRestoreApplyResult] = useState(null); // null | { ok, phase, restoredFrom, safetyBackup, apply, error }
 
   // -------------------------------------------------------------------------
   // API — backup and network come from the backend; app/service data is static
@@ -488,6 +493,9 @@ export default function PrivateNexusV1Mockup() {
       setFileApplyLog([]);
       setFileBackups([]);
       setSelectedBackup(null);
+      setDiffMode("draft-live");
+      setRestoreResult(null);
+      setRestoreApplyResult(null);
       if (data.draft?.exists) {
         const draftStale = new Date(data.draft.modifiedAt) < new Date(data.modifiedAt);
         setFileDraftStatus(
@@ -530,6 +538,9 @@ export default function PrivateNexusV1Mockup() {
 
   async function saveFileLive() {
     if (!selectedFile) return;
+    setRestoreResult(null);
+    setRestoreApplyResult(null);
+    setFileApplyResult(null);
     try {
       const res = await fetch(`${API_BASE}/api/files/write`, {
         method: "POST",
@@ -588,6 +599,8 @@ export default function PrivateNexusV1Mockup() {
 
   async function applyFileLive() {
     if (!selectedFile) return;
+    setRestoreResult(null);
+    setRestoreApplyResult(null);
     const fileId = selectedFile.id;
     try {
       const res = await fetch(`${API_BASE}/api/files/apply`, {
@@ -628,6 +641,7 @@ export default function PrivateNexusV1Mockup() {
     if (!selectedFile) return;
     if (selectedBackup?.fileName === fileName) {
       setSelectedBackup(null);
+      setDiffMode("draft-live");
       return;
     }
     try {
@@ -635,9 +649,153 @@ export default function PrivateNexusV1Mockup() {
         `${API_BASE}/api/files/backups/read?id=${encodeURIComponent(selectedFile.id)}&file=${encodeURIComponent(fileName)}`
       );
       const data = await res.json();
-      if (res.ok) setSelectedBackup({ fileName, content: data.content });
+      if (res.ok) {
+        setSelectedBackup({ fileName, content: data.content });
+        setDiffMode("live-backup");
+      }
     } catch (err) {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // v0.6.0-c — restore flow
+  // -------------------------------------------------------------------------
+  async function restoreFile() {
+    if (!selectedFile || !selectedBackup) return;
+    setShowRestoreConfirm(false);
+    setRestoreApplyResult(null);
+    setFileApplyResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/files/restore`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: selectedFile.id, file: selectedBackup.fileName }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Restore failed");
+
+      setRestoreResult({ ok: true, restoredFrom: data.restoredFrom, safetyBackup: data.safetyBackup });
+      setLogs((prev) => [
+        `[${new Date().toLocaleTimeString()}] restored → ${selectedFile.id} ← ${data.restoredFrom}`,
+        ...prev,
+      ]);
+
+      // Reload live file content + backup list; clear backup selection + reset diff
+      const rf = await fetch(`${API_BASE}/api/files/read?id=${encodeURIComponent(selectedFile.id)}`);
+      const fileData = await rf.json();
+      if (rf.ok) {
+        setSelectedFile(fileData);
+        setFileEditorContent(fileData.draft?.exists ? fileData.draft.content : fileData.content);
+        setFileDirty(false);
+        setFileValidation(null);
+        setFileLiveStatus(`Restored · ${(fileData.modifiedAt || "").slice(0, 19).replace("T", " ")}`);
+      }
+      setSelectedBackup(null);
+      setDiffMode("draft-live");
+      loadFileBackups(selectedFile.id);
+
+      // Refresh file list so metadata badges update
+      const fl = await fetch(`${API_BASE}/api/files`);
+      const files = await fl.json();
+      setFilesData(Array.isArray(files) ? files : []);
+    } catch (err) {
+      setRestoreResult({ ok: false, error: err.message });
+      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR restore: ${err.message}`, ...prev]);
+    }
+  }
+
+  async function restoreAndApplyFile() {
+    if (!selectedFile || !selectedBackup) return;
+    setShowRestoreApplyConfirm(false);
+    setRestoreResult(null);
+    setFileApplyResult(null);
+    const fileId = selectedFile.id;
+    try {
+      const res = await fetch(`${API_BASE}/api/files/restore-and-apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: fileId, file: selectedBackup.fileName }),
+      });
+      const data = await res.json();
+
+      setRestoreApplyResult({
+        ok: data.ok,
+        phase: data.phase,
+        restoredFrom: data.restoredFrom,
+        safetyBackup: data.safetyBackup,
+        apply: data.apply,
+        error: data.error,
+      });
+
+      const label = data.ok ? "restore+apply" : `restore+apply failed (${data.phase})`;
+      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${label} → ${fileId}`, ...prev]);
+
+      if (data.ok) stacksRefreshRef.current?.();
+
+      // Reload live file, backup list, apply log
+      const rf = await fetch(`${API_BASE}/api/files/read?id=${encodeURIComponent(fileId)}`);
+      const fileData = await rf.json();
+      if (rf.ok) {
+        setSelectedFile(fileData);
+        setFileEditorContent(fileData.draft?.exists ? fileData.draft.content : fileData.content);
+        setFileDirty(false);
+        setFileValidation(null);
+        setFileLiveStatus(`Restored · ${(fileData.modifiedAt || "").slice(0, 19).replace("T", " ")}`);
+      }
+      setSelectedBackup(null);
+      setDiffMode("draft-live");
+      loadFileBackups(fileId);
+      loadApplyLog(fileId);
+      loadAllApplyLog();
+
+      const fl = await fetch(`${API_BASE}/api/files`);
+      const files = await fl.json();
+      setFilesData(Array.isArray(files) ? files : []);
+    } catch (err) {
+      setRestoreApplyResult({ ok: false, phase: "request", error: err.message });
+      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR restore+apply: ${err.message}`, ...prev]);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // v0.6.0-b — diff engine
+  // -------------------------------------------------------------------------
+  function toLines(text) {
+    return (text || "").replace(/\r\n/g, "\n").split("\n");
+  }
+
+  function buildSimpleDiff(leftText, rightText) {
+    const left = toLines(leftText);
+    const right = toLines(rightText);
+    const max = Math.max(left.length, right.length);
+    const rows = [];
+    let added = 0, removed = 0, changed = 0;
+    for (let i = 0; i < max; i++) {
+      const l = left[i] ?? "";
+      const r = right[i] ?? "";
+      if (l === r) {
+        rows.push({ type: "same", left: l, right: r, line: i + 1 });
+      } else if (l && !r) {
+        rows.push({ type: "removed", left: l, right: "", line: i + 1 });
+        removed++;
+      } else if (!l && r) {
+        rows.push({ type: "added", left: "", right: r, line: i + 1 });
+        added++;
+      } else {
+        rows.push({ type: "changed", left: l, right: r, line: i + 1 });
+        changed++;
+      }
+    }
+    return { rows, summary: { added, removed, changed } };
+  }
+
+  function diffRowClass(type) {
+    switch (type) {
+      case "added":   return "bg-emerald-500/10";
+      case "removed": return "bg-rose-500/10";
+      case "changed": return "bg-amber-500/10";
+      default:        return "bg-neutral-900/40";
     }
   }
 
@@ -1572,6 +1730,9 @@ export default function PrivateNexusV1Mockup() {
               </div>
             </div>
 
+            {/* Scrollable panels + editor — fills remaining modal height */}
+            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+
             {fileValidation && fileValidation.issues.length > 0 && (
               <div className={[
                 "shrink-0 rounded-xl border p-3",
@@ -1600,10 +1761,74 @@ export default function PrivateNexusV1Mockup() {
                 "shrink-0 rounded-xl border p-3",
                 fileApplyResult.ok ? "border-blue-400/30 bg-blue-500/10" : "border-rose-400/30 bg-rose-500/10",
               ].join(" ")}>
-                <div className={["mb-1.5 text-[11px] font-semibold uppercase tracking-wide", fileApplyResult.ok ? "text-blue-300" : "text-rose-300"].join(" ")}>
-                  {fileApplyResult.ok ? `Applied · ${fileApplyResult.action}` : `Apply failed · ${fileApplyResult.action || "error"}`}
+                <div className="mb-1.5 flex items-center justify-between">
+                  <div className={["text-[11px] font-semibold uppercase tracking-wide", fileApplyResult.ok ? "text-blue-300" : "text-rose-300"].join(" ")}>
+                    {fileApplyResult.ok ? `Applied · ${fileApplyResult.action}` : `Apply failed · ${fileApplyResult.action || "error"}`}
+                  </div>
+                  <button onClick={() => setFileApplyResult(null)} className="text-neutral-600 hover:text-neutral-400 text-xs">×</button>
                 </div>
                 <pre className="whitespace-pre-wrap font-mono text-[10px] text-neutral-400">{fileApplyResult.output}</pre>
+              </div>
+            )}
+
+            {restoreResult && (
+              <div className={[
+                "shrink-0 rounded-xl border p-3",
+                restoreResult.ok ? "border-emerald-400/30 bg-emerald-500/10" : "border-rose-400/30 bg-rose-500/10",
+              ].join(" ")}>
+                <div className="mb-1 flex items-center justify-between">
+                  <div className={["text-[11px] font-semibold uppercase tracking-wide", restoreResult.ok ? "text-emerald-300" : "text-rose-300"].join(" ")}>
+                    {restoreResult.ok ? "Restore complete" : "Restore failed"}
+                  </div>
+                  <button onClick={() => setRestoreResult(null)} className="text-neutral-600 hover:text-neutral-400 text-xs">×</button>
+                </div>
+                {restoreResult.ok ? (
+                  <div className="space-y-0.5 text-[11px] text-neutral-400">
+                    <div>Restored from: <span className="font-mono text-neutral-300">{restoreResult.restoredFrom}</span></div>
+                    <div>Safety backup: <span className="font-mono text-neutral-300">{restoreResult.safetyBackup?.fileName}</span></div>
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-rose-300">{restoreResult.error}</div>
+                )}
+              </div>
+            )}
+
+            {restoreApplyResult && (
+              <div className={[
+                "shrink-0 rounded-xl border p-3",
+                restoreApplyResult.ok
+                  ? "border-blue-400/30 bg-blue-500/10"
+                  : restoreApplyResult.phase === "apply"
+                  ? "border-amber-400/30 bg-amber-500/10"
+                  : "border-rose-400/30 bg-rose-500/10",
+              ].join(" ")}>
+                <div className="mb-1.5 flex items-center justify-between">
+                  <div className={[
+                    "text-[11px] font-semibold uppercase tracking-wide",
+                    restoreApplyResult.ok ? "text-blue-300" : restoreApplyResult.phase === "apply" ? "text-amber-300" : "text-rose-300",
+                  ].join(" ")}>
+                    {restoreApplyResult.ok
+                      ? `Restore & Apply complete · ${restoreApplyResult.apply?.action}`
+                      : restoreApplyResult.phase === "apply"
+                      ? `Restored · Apply failed · ${restoreApplyResult.apply?.action}`
+                      : `Restore & Apply failed (${restoreApplyResult.phase})`}
+                  </div>
+                  <button onClick={() => setRestoreApplyResult(null)} className="text-neutral-600 hover:text-neutral-400 text-xs">×</button>
+                </div>
+                {restoreApplyResult.restoredFrom && (
+                  <div className="mb-1 space-y-0.5 text-[11px] text-neutral-400">
+                    <div>Restored from: <span className="font-mono text-neutral-300">{restoreApplyResult.restoredFrom}</span></div>
+                    {restoreApplyResult.safetyBackup && (
+                      <div>Safety backup: <span className="font-mono text-neutral-300">{restoreApplyResult.safetyBackup.fileName}</span></div>
+                    )}
+                  </div>
+                )}
+                {restoreApplyResult.apply?.output && (
+                  <pre className="mt-1.5 whitespace-pre-wrap font-mono text-[10px] text-neutral-400">{restoreApplyResult.apply.output}</pre>
+                )}
+                {!restoreApplyResult.restoredFrom && restoreApplyResult.error && (
+                  <div className="text-[11px] text-rose-300">{restoreApplyResult.error}</div>
+                )}
               </div>
             )}
 
@@ -1634,7 +1859,7 @@ export default function PrivateNexusV1Mockup() {
                   </div>
                   {selectedBackup && (
                     <button
-                      onClick={() => setSelectedBackup(null)}
+                      onClick={() => { setSelectedBackup(null); setDiffMode("draft-live"); }}
                       className="text-[10px] text-neutral-500 hover:text-neutral-300"
                     >
                       Close preview
@@ -1660,6 +1885,30 @@ export default function PrivateNexusV1Mockup() {
                       >
                         {selectedBackup?.fileName === backup.fileName ? "Hide" : "View"}
                       </button>
+                      <button
+                        onClick={async () => {
+                          if (selectedBackup?.fileName !== backup.fileName) {
+                            await openBackupContent(backup.fileName);
+                          }
+                          setShowRestoreConfirm(true);
+                        }}
+                        className="text-[10px] text-amber-400 hover:text-amber-300"
+                      >
+                        Restore
+                      </button>
+                      {selectedFile.applyStrategy && (
+                        <button
+                          onClick={async () => {
+                            if (selectedBackup?.fileName !== backup.fileName) {
+                              await openBackupContent(backup.fileName);
+                            }
+                            setShowRestoreApplyConfirm(true);
+                          }}
+                          className="text-[10px] text-blue-400 hover:text-blue-300"
+                        >
+                          Restore & Apply
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1676,12 +1925,209 @@ export default function PrivateNexusV1Mockup() {
               </div>
             )}
 
+            {/* v0.6.0-b — diff viewer */}
+            {(() => {
+              const draftVsLive   = buildSimpleDiff(selectedFile.content || "", fileEditorContent || "");
+              const liveVsBackup  = selectedBackup
+                ? buildSimpleDiff(selectedBackup.content || "", selectedFile.content || "")
+                : null;
+              const activeDiff    = diffMode === "live-backup" && liveVsBackup ? liveVsBackup : draftVsLive;
+              const activeLabel   = diffMode === "live-backup" && liveVsBackup
+                ? `Live vs Backup: ${selectedBackup.fileName}`
+                : "Draft vs Live";
+              const { added, removed, changed } = activeDiff.summary;
+              const hasDiff = added + removed + changed > 0;
+
+              return (
+                <div className="shrink-0 rounded-xl border border-neutral-800 bg-neutral-900/60">
+                  {/* Controls */}
+                  <div className="flex items-center gap-2 border-b border-neutral-800 px-3 py-2">
+                    <span className="text-[10px] uppercase tracking-wide text-neutral-500">Diff</span>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => setDiffMode("draft-live")}
+                        className={[
+                          "rounded px-2 py-0.5 text-[10px] transition",
+                          diffMode === "draft-live"
+                            ? "bg-rose-500/20 text-rose-300"
+                            : "text-neutral-500 hover:text-neutral-300",
+                        ].join(" ")}
+                      >
+                        Draft vs Live
+                      </button>
+                      <button
+                        disabled={!liveVsBackup}
+                        onClick={() => setDiffMode("live-backup")}
+                        className={[
+                          "rounded px-2 py-0.5 text-[10px] transition",
+                          diffMode === "live-backup"
+                            ? "bg-blue-500/20 text-blue-300"
+                            : "text-neutral-500 hover:text-neutral-300",
+                          !liveVsBackup ? "opacity-30 cursor-not-allowed" : "",
+                        ].join(" ")}
+                      >
+                        Live vs Backup
+                      </button>
+                    </div>
+                    {hasDiff && (
+                      <div className="ml-auto flex gap-1.5">
+                        {added > 0 && (
+                          <span className="rounded bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-300">
+                            +{added} added
+                          </span>
+                        )}
+                        {removed > 0 && (
+                          <span className="rounded bg-rose-500/10 px-2 py-0.5 text-[10px] text-rose-300">
+                            -{removed} removed
+                          </span>
+                        )}
+                        {changed > 0 && (
+                          <span className="rounded bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-300">
+                            ~{changed} changed
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {!hasDiff ? (
+                    <div className="px-3 py-2 text-[11px] text-neutral-600">
+                      {activeLabel} — no differences
+                    </div>
+                  ) : (
+                    <div className="max-h-52 overflow-auto">
+                      {/* Column headers */}
+                      <div className="sticky top-0 z-10 grid grid-cols-[3rem_1fr_1fr] gap-0 border-b border-neutral-800 bg-neutral-900 px-0">
+                        <div className="px-2 py-1 text-[9px] uppercase tracking-wide text-neutral-600">#</div>
+                        <div className="border-l border-neutral-800 px-2 py-1 text-[9px] uppercase tracking-wide text-neutral-600">
+                          {diffMode === "live-backup" ? "Backup" : "Draft"}
+                        </div>
+                        <div className="border-l border-neutral-800 px-2 py-1 text-[9px] uppercase tracking-wide text-neutral-600">
+                          Live
+                        </div>
+                      </div>
+                      {(() => {
+                        const changedRows = activeDiff.rows.filter((row) => row.type !== "same");
+                        const ROW_CAP = 150;
+                        const visible = changedRows.slice(0, ROW_CAP);
+                        const overflow = changedRows.length - visible.length;
+                        return (
+                          <>
+                            {visible.map((row) => (
+                              <div
+                                key={row.line}
+                                className={["grid grid-cols-[3rem_1fr_1fr] gap-0", diffRowClass(row.type)].join(" ")}
+                              >
+                                <div className="px-2 py-0.5 text-[10px] text-neutral-600 select-none">{row.line}</div>
+                                <div className="border-l border-neutral-800/60 px-2 py-0.5 font-mono text-[10px] leading-5 text-neutral-400 whitespace-pre-wrap break-all">
+                                  {row.left || <span className="text-neutral-700">—</span>}
+                                </div>
+                                <div className="border-l border-neutral-800/60 px-2 py-0.5 font-mono text-[10px] leading-5 text-neutral-300 whitespace-pre-wrap break-all">
+                                  {row.right || <span className="text-neutral-700">—</span>}
+                                </div>
+                              </div>
+                            ))}
+                            {overflow > 0 && (
+                              <div className="px-3 py-1.5 text-[10px] text-neutral-600">
+                                … {overflow} more changed row{overflow !== 1 ? "s" : ""} not shown
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             <textarea
               value={fileEditorContent}
               onChange={(e) => { setFileEditorContent(e.target.value); setFileDirty(true); setFileValidation(null); }}
-              className="min-h-0 flex-1 resize-none rounded-xl border border-neutral-800 bg-neutral-950/80 p-4 font-mono text-xs leading-6 text-neutral-200 outline-none focus:border-rose-400/30"
+              className="min-h-[180px] flex-1 resize-none rounded-xl border border-neutral-800 bg-neutral-950/80 p-4 font-mono text-xs leading-6 text-neutral-200 outline-none focus:border-rose-400/30"
               spellCheck={false}
             />
+
+            </div>{/* end scrollable panels + editor */}
+          </div>
+        </div>
+      )}
+
+      {/* Confirm restore modal */}
+      {showRestoreConfirm && selectedFile && selectedBackup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+          <div className="w-[32rem] rounded-xl border border-amber-400/30 bg-neutral-900 p-6">
+            <div className="mb-2 text-lg font-semibold">Confirm Restore</div>
+            <div className="mb-1 text-sm text-neutral-400">You are about to restore this backup to the live file:</div>
+            <div className="mb-3 rounded bg-neutral-800 px-3 py-2 font-mono text-xs text-amber-300">
+              {selectedBackup.fileName}
+            </div>
+            <div className="mb-1 text-xs text-neutral-500">
+              Target: <span className="font-mono text-neutral-300">{selectedFile.path}</span>
+            </div>
+            <div className="mt-3 rounded border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+              The current live file will be automatically backed up before overwriting.
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => setShowRestoreConfirm(false)}
+                className="rounded bg-neutral-700 px-3 py-1 text-sm hover:bg-neutral-600"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={restoreFile}
+                className="rounded bg-amber-600 px-3 py-1 text-sm font-semibold text-white hover:bg-amber-500"
+              >
+                Restore Now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm restore & apply modal */}
+      {showRestoreApplyConfirm && selectedFile && selectedBackup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+          <div className="w-[34rem] rounded-xl border border-blue-400/30 bg-neutral-900 p-6">
+            <div className="mb-2 text-lg font-semibold">Confirm Restore & Apply</div>
+            <div className="mb-1 text-sm text-neutral-400">This will run two steps in sequence:</div>
+            <ol className="mb-4 mt-2 space-y-2 text-sm">
+              <li className="flex gap-3">
+                <span className="shrink-0 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">1</span>
+                <div>
+                  <div className="text-neutral-200">Restore backup to live</div>
+                  <div className="mt-0.5 font-mono text-[11px] text-neutral-500">{selectedBackup.fileName}</div>
+                </div>
+              </li>
+              <li className="flex gap-3">
+                <span className="shrink-0 rounded bg-blue-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-blue-300">2</span>
+                <div>
+                  <div className="text-neutral-200">Apply via <span className="font-mono text-blue-300">{selectedFile.applyStrategy}</span></div>
+                  <div className="mt-0.5 font-mono text-[11px] text-neutral-500">{selectedFile.applyPath}</div>
+                </div>
+              </li>
+            </ol>
+            <div className="rounded border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+              The current live file will be backed up before overwriting.
+              {selectedFile.applyStrategy === "compose-up" && (
+                <span> Running containers may restart.</span>
+              )}
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => setShowRestoreApplyConfirm(false)}
+                className="rounded bg-neutral-700 px-3 py-1 text-sm hover:bg-neutral-600"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={restoreAndApplyFile}
+                className="rounded bg-blue-600 px-3 py-1 text-sm font-semibold text-white hover:bg-blue-500"
+              >
+                Restore & Apply Now
+              </button>
+            </div>
           </div>
         </div>
       )}
