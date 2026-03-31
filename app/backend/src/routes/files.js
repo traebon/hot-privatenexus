@@ -13,6 +13,7 @@ import { computePrunePlan, executeDeleteCandidates } from "../backupRetention.js
 import { buildRestorePlan } from "../restorePlanner.js";
 import { recordRestore, getRestoreLog } from "../restoreLog.js";
 import { getRollbackRecommendation } from "../restoreRollbackAdvice.js";
+import { getSideBySidePath, validateTargetPath } from "../restoreTargeting.js";
 
 export const filesRouter = Router();
 
@@ -271,15 +272,18 @@ filesRouter.get("/backups/read", (req, res) => {
   res.json({ ok: true, fileName, content });
 });
 
-// POST /api/files/restore — restore a backup to live (safety-backup current live first)
+// POST /api/files/restore — restore a backup to live (in_place) or alternate path (side_by_side)
 filesRouter.post("/restore", (req, res) => {
-  const { id, file: backupFileName } = req.body || {};
+  const { id, file: backupFileName, mode = "in_place", targetPath: requestedTargetPath } = req.body || {};
 
   if (!id || typeof id !== "string") {
     return res.status(400).json({ ok: false, error: "File id is required" });
   }
   if (!backupFileName || typeof backupFileName !== "string") {
     return res.status(400).json({ ok: false, error: "Backup file name is required" });
+  }
+  if (mode !== "in_place" && mode !== "side_by_side") {
+    return res.status(400).json({ ok: false, error: "mode must be 'in_place' or 'side_by_side'" });
   }
 
   const file = getRegisteredFileById(id);
@@ -301,6 +305,58 @@ filesRouter.post("/restore", (req, res) => {
     return res.status(404).json({ ok: false, error: "Backup not found" });
   }
 
+  // --- Side-by-side mode: write to alternate path, never touch live ---
+  if (mode === "side_by_side") {
+    let effectiveTargetPath;
+    if (requestedTargetPath && typeof requestedTargetPath === "string") {
+      const check = validateTargetPath(file.path, requestedTargetPath);
+      if (!check.ok) return res.status(400).json({ ok: false, error: check.error });
+      effectiveTargetPath = path.resolve(requestedTargetPath);
+    } else {
+      effectiveTargetPath = getSideBySidePath(file.path);
+    }
+
+    try {
+      fs.writeFileSync(effectiveTargetPath, backupContent, "utf8");
+      console.log(`[restore:side-by-side] ${id} → ${effectiveTargetPath}`);
+    } catch (err) {
+      console.error(`Side-by-side restore failed for ${id}`, err);
+      return res.status(500).json({ ok: false, error: "Side-by-side restore failed" });
+    }
+
+    const validation = file.validatable ? validateFile(file.type, backupContent) : null;
+    const kg = getKnownGood(id);
+    const labelEntry = getBackupLabel(backupFileName);
+
+    recordRestore({
+      fileId: id,
+      backupFileName,
+      backupLabel: labelEntry?.label ?? null,
+      wasLkg: kg?.fileName === backupFileName,
+      riskLevel: null,
+      type: "restore",
+      outcome: "success",
+      timestamp: new Date().toISOString(),
+      output: null,
+      validation: validation ?? undefined,
+      restoreMode: "side_by_side",
+      targetPath: effectiveTargetPath,
+      livePathUnchanged: true,
+    });
+
+    return res.json({
+      ok: true,
+      id,
+      mode: "side_by_side",
+      restoredFrom: backupFileName,
+      targetPath: effectiveTargetPath,
+      livePathUnchanged: true,
+      validation,
+      recommendation: "Inspect the restored copy at the target path. Compare against live before proceeding with manual cutover.",
+    });
+  }
+
+  // --- In-place mode (default) ---
   try {
     // Safety backup of current live before overwrite
     const currentContent = fs.existsSync(file.path)
@@ -332,11 +388,15 @@ filesRouter.post("/restore", (req, res) => {
       timestamp: new Date().toISOString(),
       output: validationFailed ? "Validation failed after restore" : null,
       validation: validation ?? undefined,
+      restoreMode: "in_place",
+      targetPath: file.path,
+      livePathUnchanged: false,
     });
 
     return res.json({
       ok: true,
       id,
+      mode: "in_place",
       restoredFrom: backupFileName,
       safetyBackup: { fileName: safetyBackup.fileName, size: safetyBackup.size },
       file: { path: file.path, modifiedAt: stats.mtime.toISOString(), size: stats.size },

@@ -3,6 +3,7 @@ import { getRegisteredFileById } from "./filesRegistry.js";
 import { getKnownGood } from "./fileKnownGood.js";
 import { getBackupLabel, getAllBackupLabelsForFile } from "./backupLabels.js";
 import { listBackups, readBackup } from "./fileBackups.js";
+import { getSideBySidePath } from "./restoreTargeting.js";
 
 /**
  * Build a restore plan for a given file + backup combination.
@@ -97,6 +98,7 @@ export function buildRestorePlan(fileId, backupFileName) {
   }
 
   const recommendation = buildRecommendation(riskLevel, isLkg, label, driftedFromLive, dependencies);
+  const suggestedSideBySidePath = getSideBySidePath(file.path);
 
   return {
     ok: true,
@@ -110,6 +112,12 @@ export function buildRestorePlan(fileId, backupFileName) {
       riskLevel,
       riskReasons,
       recommendation,
+      supportedModes: ["in_place", "side_by_side"],
+      sideBySide: {
+        allowed: true,
+        suggestedPath: suggestedSideBySidePath,
+        caveats: [],
+      },
     },
   };
 }

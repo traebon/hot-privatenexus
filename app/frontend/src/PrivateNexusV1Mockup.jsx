@@ -422,6 +422,10 @@ export default function PrivateNexusV1Mockup() {
   const [restorePlan, setRestorePlan] = useState(null); // null | plan object
   const [restorePlanLoading, setRestorePlanLoading] = useState(false);
   const [showRestorePlanModal, setShowRestorePlanModal] = useState(false);
+  const [restoreMode, setRestoreMode] = useState("in_place"); // "in_place" | "side_by_side"
+  const [sbsTargetPath, setSbsTargetPath] = useState(""); // side-by-side target path
+  const [sbsResult, setSbsResult] = useState(null); // null | restore response for side-by-side
+  const [sbsLoading, setSbsLoading] = useState(false);
   const [restoreLogData, setRestoreLogData] = useState([]); // file-scoped (last 5, current file)
   const [allRestoreLogData, setAllRestoreLogData] = useState([]); // global (for Home)
   const [expandedRestoreEntry, setExpandedRestoreEntry] = useState(null); // index into restoreLogData
@@ -721,6 +725,38 @@ export default function PrivateNexusV1Mockup() {
     }
   }
 
+  async function performSideBySideRestore() {
+    if (!selectedFile || !restorePlan) return;
+    setSbsLoading(true);
+    setSbsResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/files/restore`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: selectedFile.id,
+          file: restorePlan.backup.fileName,
+          mode: "side_by_side",
+          ...(sbsTargetPath ? { targetPath: sbsTargetPath } : {}),
+        }),
+      });
+      const data = await res.json();
+      setSbsResult(data);
+      if (res.ok) {
+        setLogs((prev) => [
+          `[${new Date().toLocaleTimeString()}] side-by-side restore → ${selectedFile.id} → ${data.targetPath}`,
+          ...prev,
+        ]);
+        loadRestoreLog(selectedFile.id);
+        loadAllRestoreLog();
+      }
+    } catch (err) {
+      setSbsResult({ ok: false, error: err.message });
+    } finally {
+      setSbsLoading(false);
+    }
+  }
+
   async function loadRestorePlan(backupFileName) {
     if (!selectedFile) return;
     setRestorePlanLoading(true);
@@ -733,6 +769,9 @@ export default function PrivateNexusV1Mockup() {
       const data = await res.json();
       if (res.ok) {
         setRestorePlan(data.plan);
+        setRestoreMode("in_place");
+        setSbsTargetPath(data.plan.sideBySide?.suggestedPath ?? "");
+        setSbsResult(null);
         setShowRestorePlanModal(true);
       }
     } catch {
@@ -1322,6 +1361,7 @@ export default function PrivateNexusV1Mockup() {
                   <span className="truncate text-neutral-400">{entry.fileId}</span>
                   <span className="shrink-0 text-neutral-600">·</span>
                   <span className="shrink-0 text-neutral-500">{entry.type === "restore-and-apply" ? "r+apply" : "restore"}</span>
+                  {entry.restoreMode === "side_by_side" && <span className="shrink-0 rounded bg-sky-500/15 px-1 py-0.5 text-[9px] text-sky-300">sbs</span>}
                   {entry.wasLkg && <span className="shrink-0 text-[9px] uppercase tracking-wide text-emerald-400/60">LKG</span>}
                   {entry.outcome === "partial" && <span className="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[9px] text-amber-300">partial</span>}
                   {entry.validation && (
@@ -2237,6 +2277,9 @@ export default function PrivateNexusV1Mockup() {
                         >
                           <span className={outcomeCls}>{outcomeIcon}</span>
                           <span className="text-neutral-300">{entry.type}</span>
+                          {entry.restoreMode === "side_by_side" && (
+                            <span className="rounded bg-sky-500/15 px-1 py-0.5 text-[9px] text-sky-300">side-by-side</span>
+                          )}
                           {entry.backupLabel && <span className="text-sky-300/70">· {entry.backupLabel}</span>}
                           {entry.wasLkg && <span className="text-[9px] uppercase tracking-wide text-emerald-400/60">LKG</span>}
                           {entry.outcome === "partial" && <span className="rounded bg-amber-500/20 px-1 py-0.5 text-[9px] text-amber-300">partial</span>}
@@ -2878,36 +2921,130 @@ export default function PrivateNexusV1Mockup() {
                   </div>
                 </div>
               )}
+
+              {/* Restore mode selector */}
+              <div>
+                <div className="mb-2 text-[10px] uppercase tracking-wide text-neutral-500">Restore mode</div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { setRestoreMode("in_place"); setSbsResult(null); }}
+                    className={[
+                      "flex-1 rounded-lg border px-3 py-2 text-xs transition-colors",
+                      restoreMode === "in_place"
+                        ? "border-amber-400/40 bg-amber-500/15 text-amber-300"
+                        : "border-neutral-700 bg-neutral-800/50 text-neutral-400 hover:border-neutral-600",
+                    ].join(" ")}
+                  >
+                    <div className="font-semibold">In-place</div>
+                    <div className="mt-0.5 text-[10px] opacity-70">Overwrites live file</div>
+                  </button>
+                  <button
+                    onClick={() => { setRestoreMode("side_by_side"); setSbsResult(null); }}
+                    className={[
+                      "flex-1 rounded-lg border px-3 py-2 text-xs transition-colors",
+                      restoreMode === "side_by_side"
+                        ? "border-sky-400/40 bg-sky-500/15 text-sky-300"
+                        : "border-neutral-700 bg-neutral-800/50 text-neutral-400 hover:border-neutral-600",
+                    ].join(" ")}
+                  >
+                    <div className="font-semibold">Side-by-side</div>
+                    <div className="mt-0.5 text-[10px] opacity-70">Live file unchanged</div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Side-by-side target path */}
+              {restoreMode === "side_by_side" && (
+                <div>
+                  <div className="mb-1.5 text-[10px] uppercase tracking-wide text-neutral-500">Restore target</div>
+                  <input
+                    type="text"
+                    value={sbsTargetPath}
+                    onChange={(e) => { setSbsTargetPath(e.target.value); setSbsResult(null); }}
+                    className="w-full rounded-lg border border-sky-400/20 bg-neutral-800/60 px-3 py-2 font-mono text-[11px] text-neutral-200 outline-none focus:border-sky-400/50"
+                    placeholder="Target path (auto-generated if blank)"
+                  />
+                  <div className="mt-1.5 rounded border border-sky-400/15 bg-sky-500/5 px-2.5 py-1.5 text-[10px] text-sky-300/70">
+                    Live file at <span className="font-mono">{restorePlan.livePath}</span> will remain unchanged. Restore writes to the path above.
+                  </div>
+                </div>
+              )}
+
+              {/* Side-by-side result */}
+              {sbsResult && (
+                <div className={[
+                  "rounded-lg border p-3",
+                  sbsResult.ok ? "border-sky-400/30 bg-sky-500/10" : "border-rose-400/30 bg-rose-500/10",
+                ].join(" ")}>
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <span className={["text-[11px] font-semibold uppercase tracking-wide", sbsResult.ok ? "text-sky-300" : "text-rose-300"].join(" ")}>
+                      {sbsResult.ok ? "Side-by-side restore complete" : "Side-by-side restore failed"}
+                    </span>
+                    {sbsResult.validation && (
+                      <span className={[
+                        "rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wide",
+                        sbsResult.validation.status === "green" ? "bg-emerald-500/20 text-emerald-300"
+                        : sbsResult.validation.status === "amber" ? "bg-amber-500/20 text-amber-300"
+                        : "bg-rose-500/20 text-rose-300",
+                      ].join(" ")}>
+                        validation {sbsResult.validation.status}
+                      </span>
+                    )}
+                  </div>
+                  {sbsResult.ok ? (
+                    <div className="space-y-1 text-[11px] text-neutral-400">
+                      <div>Restored to: <span className="font-mono text-neutral-200 break-all">{sbsResult.targetPath}</span></div>
+                      <div className="mt-1.5 text-sky-300/70 italic">{sbsResult.recommendation}</div>
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-rose-300">{sbsResult.error}</div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Footer */}
             <div className="flex items-center justify-end gap-2 border-t border-neutral-800 px-5 py-3">
               <button
-                onClick={() => { setShowRestorePlanModal(false); setRestorePlan(null); }}
+                onClick={() => { setShowRestorePlanModal(false); setRestorePlan(null); setSbsResult(null); }}
                 className="rounded bg-neutral-700 px-3 py-1.5 text-xs hover:bg-neutral-600"
               >
-                Cancel
+                {sbsResult?.ok ? "Close" : "Cancel"}
               </button>
-              <button
-                onClick={async () => {
-                  setShowRestorePlanModal(false);
-                  await openBackupContent(restorePlan.backup.fileName);
-                  setShowRestoreConfirm(true);
-                }}
-                className="rounded border border-amber-400/30 bg-amber-500/15 px-3 py-1.5 text-xs text-amber-300 hover:bg-amber-500/25"
-              >
-                Restore
-              </button>
-              {selectedFile.applyStrategy && (
+              {restoreMode === "in_place" ? (
+                <>
+                  <button
+                    onClick={async () => {
+                      setShowRestorePlanModal(false);
+                      setRestorePlan(null);
+                      await openBackupContent(restorePlan.backup.fileName);
+                      setShowRestoreConfirm(true);
+                    }}
+                    className="rounded border border-amber-400/30 bg-amber-500/15 px-3 py-1.5 text-xs text-amber-300 hover:bg-amber-500/25"
+                  >
+                    Restore
+                  </button>
+                  {selectedFile.applyStrategy && (
+                    <button
+                      onClick={async () => {
+                        setShowRestorePlanModal(false);
+                        setRestorePlan(null);
+                        await openBackupContent(restorePlan.backup.fileName);
+                        setShowRestoreApplyConfirm(true);
+                      }}
+                      className="rounded border border-blue-400/30 bg-blue-500/15 px-3 py-1.5 text-xs text-blue-300 hover:bg-blue-500/25"
+                    >
+                      Restore & Apply
+                    </button>
+                  )}
+                </>
+              ) : (
                 <button
-                  onClick={async () => {
-                    setShowRestorePlanModal(false);
-                    await openBackupContent(restorePlan.backup.fileName);
-                    setShowRestoreApplyConfirm(true);
-                  }}
-                  className="rounded border border-blue-400/30 bg-blue-500/15 px-3 py-1.5 text-xs text-blue-300 hover:bg-blue-500/25"
+                  onClick={performSideBySideRestore}
+                  disabled={sbsLoading || sbsResult?.ok}
+                  className="rounded border border-sky-400/30 bg-sky-500/15 px-3 py-1.5 text-xs text-sky-300 hover:bg-sky-500/25 disabled:opacity-40"
                 >
-                  Restore & Apply
+                  {sbsLoading ? "Restoring…" : sbsResult?.ok ? "Restored" : "Restore Side-by-Side"}
                 </button>
               )}
             </div>

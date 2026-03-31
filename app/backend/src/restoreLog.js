@@ -45,6 +45,10 @@ export function recordRestore(entry) {
     ...(entry.phases                !== undefined && { phases:                  entry.phases }),
     ...(entry.validation            !== undefined && { validation:              entry.validation }),
     ...(entry.rollbackRecommendation !== undefined && { rollbackRecommendation: entry.rollbackRecommendation }),
+    // v0.8.2 optional fields
+    ...(entry.restoreMode     !== undefined && { restoreMode:     entry.restoreMode }),
+    ...(entry.targetPath      !== undefined && { targetPath:      entry.targetPath }),
+    ...(entry.livePathUnchanged !== undefined && { livePathUnchanged: entry.livePathUnchanged }),
   });
   const trimmed = log.slice(-MAX_ENTRIES);
   try {
