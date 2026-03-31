@@ -41,6 +41,10 @@ export function recordRestore(entry) {
     outcome:        entry.outcome,
     timestamp:      entry.timestamp,
     output:         entry.output        ?? null,
+    // v0.8.1 optional fields — omitted from old entries so callers must guard with ?.
+    ...(entry.phases                !== undefined && { phases:                  entry.phases }),
+    ...(entry.validation            !== undefined && { validation:              entry.validation }),
+    ...(entry.rollbackRecommendation !== undefined && { rollbackRecommendation: entry.rollbackRecommendation }),
   });
   const trimmed = log.slice(-MAX_ENTRIES);
   try {

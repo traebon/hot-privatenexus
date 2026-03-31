@@ -8,12 +8,11 @@ import { validateFile } from "../fileValidator.js";
 import { applyFile } from "../fileApply.js";
 import { recordApply, getApplyLog } from "../fileApplyLog.js";
 import { markKnownGood, getKnownGood } from "../fileKnownGood.js";
-import { setBackupLabel, getAllBackupLabelsForFile } from "../backupLabels.js";
+import { setBackupLabel, getBackupLabel, getAllBackupLabelsForFile } from "../backupLabels.js";
 import { computePrunePlan, executeDeleteCandidates } from "../backupRetention.js";
 import { buildRestorePlan } from "../restorePlanner.js";
 import { recordRestore, getRestoreLog } from "../restoreLog.js";
-import { getKnownGood } from "../fileKnownGood.js";
-import { getBackupLabel } from "../backupLabels.js";
+import { getRollbackRecommendation } from "../restoreRollbackAdvice.js";
 
 export const filesRouter = Router();
 
@@ -315,6 +314,11 @@ filesRouter.post("/restore", (req, res) => {
     const stats = fs.statSync(file.path);
     console.log(`[restore] ${id} ← ${backupFileName}`);
 
+    // Post-restore validation (informational — file is already written)
+    const validation = file.validatable ? validateFile(file.type, backupContent) : null;
+    const validationFailed = validation?.status === "red";
+    const outcome = validationFailed ? "partial" : "success";
+
     const kg = getKnownGood(id);
     const labelEntry = getBackupLabel(backupFileName);
     recordRestore({
@@ -324,9 +328,10 @@ filesRouter.post("/restore", (req, res) => {
       wasLkg: kg?.fileName === backupFileName,
       riskLevel: null,
       type: "restore",
-      outcome: "success",
+      outcome,
       timestamp: new Date().toISOString(),
-      output: null,
+      output: validationFailed ? "Validation failed after restore" : null,
+      validation: validation ?? undefined,
     });
 
     return res.json({
@@ -335,6 +340,7 @@ filesRouter.post("/restore", (req, res) => {
       restoredFrom: backupFileName,
       safetyBackup: { fileName: safetyBackup.fileName, size: safetyBackup.size },
       file: { path: file.path, modifiedAt: stats.mtime.toISOString(), size: stats.size },
+      validation,
     });
   } catch (err) {
     console.error(`Failed to restore ${id} from ${backupFileName}`, err);
@@ -383,6 +389,9 @@ filesRouter.post("/restore-and-apply", (req, res) => {
     return res.status(404).json({ ok: false, error: "Backup not found" });
   }
 
+  const phases = [];
+  const now = () => new Date().toISOString();
+
   // Phase 1 — safety backup + restore
   let safetyBackup;
   try {
@@ -391,29 +400,35 @@ filesRouter.post("/restore-and-apply", (req, res) => {
       : "";
     safetyBackup = backupLiveFile(id, file.path, currentContent);
     fs.writeFileSync(file.path, backupContent, "utf8");
+    phases.push({ name: "restore_written", status: "ok", timestamp: now(), detail: null });
     console.log(`[restore-and-apply] restored ${id} ← ${backupFileName}`);
   } catch (err) {
+    phases.push({ name: "restore_written", status: "failed", timestamp: now(), detail: err.message });
     console.error(`Failed to restore ${id}`, err);
     recordRestore({
       fileId: id, backupFileName,
       backupLabel: getBackupLabel(backupFileName)?.label ?? null,
       wasLkg: getKnownGood(id)?.fileName === backupFileName,
       riskLevel: null, type: "restore-and-apply", outcome: "failed",
-      timestamp: new Date().toISOString(), output: err.message,
+      timestamp: now(), output: err.message,
+      phases,
     });
-    return res.status(500).json({ ok: false, error: "Restore phase failed", phase: "restore" });
+    return res.status(500).json({ ok: false, error: "Restore phase failed", phase: "restore", phases });
   }
 
   // Phase 2 — pre-apply validation (if validatable)
+  let validation = null;
   if (file.validatable) {
-    const validation = validateFile(file.type, backupContent);
+    validation = validateFile(file.type, backupContent);
     if (validation.status === "red") {
+      phases.push({ name: "validation_failed", status: "failed", timestamp: now(), detail: `${validation.errors?.length ?? 0} error(s)` });
       recordRestore({
         fileId: id, backupFileName,
         backupLabel: getBackupLabel(backupFileName)?.label ?? null,
         wasLkg: getKnownGood(id)?.fileName === backupFileName,
         riskLevel: null, type: "restore-and-apply", outcome: "failed",
-        timestamp: new Date().toISOString(), output: "Validation errors blocked apply",
+        timestamp: now(), output: "Validation errors blocked apply",
+        phases, validation,
       });
       return res.status(422).json({
         ok: false,
@@ -421,25 +436,38 @@ filesRouter.post("/restore-and-apply", (req, res) => {
         error: "Restored content has validation errors — apply skipped",
         safetyBackup: { fileName: safetyBackup.fileName, size: safetyBackup.size },
         validation,
+        phases,
       });
     }
+    phases.push({ name: "validation_passed", status: "ok", timestamp: now(), detail: validation.status });
   }
 
   // Phase 3 — apply
+  phases.push({ name: "apply_started", status: "ok", timestamp: now(), detail: file.applyStrategy });
   const applyResult = applyFile(file.applyStrategy, file.applyPath);
   console.log(`[restore-and-apply] apply ${file.applyStrategy} → ${file.applyPath} — ${applyResult.ok ? "ok" : "failed"}`);
+  phases.push({
+    name: applyResult.ok ? "apply_completed" : "apply_failed",
+    status: applyResult.ok ? "ok" : "failed",
+    timestamp: now(),
+    detail: applyResult.ok ? null : (applyResult.stderr || applyResult.output || null),
+  });
 
   recordApply({
     fileId: file.id,
     strategy: file.applyStrategy,
     target: file.applyPath,
-    timestamp: new Date().toISOString(),
+    timestamp: now(),
     ok: applyResult.ok,
     output: applyResult.output || "",
   });
 
   const raKg = getKnownGood(id);
   const raLabel = getBackupLabel(backupFileName);
+  const rollbackRecommendation = applyResult.ok
+    ? null
+    : getRollbackRecommendation(id, backupFileName);
+
   recordRestore({
     fileId: id,
     backupFileName,
@@ -448,8 +476,11 @@ filesRouter.post("/restore-and-apply", (req, res) => {
     riskLevel: null,
     type: "restore-and-apply",
     outcome: applyResult.ok ? "success" : "failed",
-    timestamp: new Date().toISOString(),
+    timestamp: now(),
     output: applyResult.output || null,
+    phases,
+    validation: validation ?? undefined,
+    rollbackRecommendation: rollbackRecommendation ?? undefined,
   });
 
   const stats = fs.statSync(file.path);
@@ -459,12 +490,18 @@ filesRouter.post("/restore-and-apply", (req, res) => {
     phase: applyResult.ok ? "done" : "apply",
     restoredFrom: backupFileName,
     safetyBackup: { fileName: safetyBackup.fileName, size: safetyBackup.size },
+    validation,
     apply: {
       ok: applyResult.ok,
       action: file.applyStrategy,
       target: file.applyPath,
       output: applyResult.output,
+      stdout: applyResult.stdout,
+      stderr: applyResult.stderr,
+      exitCode: applyResult.exitCode,
     },
+    rollbackRecommendation,
+    phases,
     file: { path: file.path, modifiedAt: stats.mtime.toISOString(), size: stats.size },
   });
 });

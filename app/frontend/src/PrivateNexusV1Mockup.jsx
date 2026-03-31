@@ -424,6 +424,7 @@ export default function PrivateNexusV1Mockup() {
   const [showRestorePlanModal, setShowRestorePlanModal] = useState(false);
   const [restoreLogData, setRestoreLogData] = useState([]); // file-scoped (last 5, current file)
   const [allRestoreLogData, setAllRestoreLogData] = useState([]); // global (for Home)
+  const [expandedRestoreEntry, setExpandedRestoreEntry] = useState(null); // index into restoreLogData
   const [showPruneModal, setShowPruneModal] = useState(false);
   const [pruneMode, setPruneMode] = useState("count");
   const [pruneKeepCount, setPruneKeepCount] = useState(5);
@@ -873,9 +874,15 @@ export default function PrivateNexusV1Mockup() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Restore failed");
 
-      setRestoreResult({ ok: true, restoredFrom: data.restoredFrom, safetyBackup: data.safetyBackup });
+      setRestoreResult({
+        ok: true,
+        restoredFrom: data.restoredFrom,
+        safetyBackup: data.safetyBackup,
+        validation: data.validation ?? null,
+      });
+      const validNote = data.validation?.status === "red" ? " · validation failed (partial)" : data.validation ? ` · validation ${data.validation.status}` : "";
       setLogs((prev) => [
-        `[${new Date().toLocaleTimeString()}] restored → ${selectedFile.id} ← ${data.restoredFrom}`,
+        `[${new Date().toLocaleTimeString()}] restored → ${selectedFile.id} ← ${data.restoredFrom}${validNote}`,
         ...prev,
       ]);
 
@@ -928,6 +935,9 @@ export default function PrivateNexusV1Mockup() {
         restoredFrom: data.restoredFrom,
         safetyBackup: data.safetyBackup,
         apply: data.apply,
+        validation: data.validation ?? null,
+        rollbackRecommendation: data.rollbackRecommendation ?? null,
+        phases: data.phases ?? null,
         error: data.error,
       });
 
@@ -1303,22 +1313,29 @@ export default function PrivateNexusV1Mockup() {
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-4">
           <div className="mb-3 text-sm font-semibold text-neutral-300">Recent Restores</div>
           <div className="space-y-2 text-xs">
-            {allRestoreLogData.slice(0, 5).map((entry, i) => {
-              const riskCls = entry.riskLevel === "safe" ? "text-emerald-400/60" : entry.riskLevel === "warning" ? "text-amber-400/60" : entry.riskLevel === "high_risk" ? "text-rose-400/60" : "";
-              return (
-                <div key={i} className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className={entry.outcome === "success" ? "text-emerald-300" : "text-rose-300"}>{entry.outcome === "success" ? "✓" : "✕"}</span>
-                    <span className="truncate text-neutral-400">{entry.fileId}</span>
-                    <span className="shrink-0 text-neutral-600">·</span>
-                    <span className="shrink-0 text-neutral-500">{entry.type === "restore-and-apply" ? "r+apply" : "restore"}</span>
-                    {entry.wasLkg && <span className="shrink-0 text-[9px] uppercase tracking-wide text-emerald-400/60">LKG</span>}
-                    {entry.riskLevel && <span className={["shrink-0 text-[9px]", riskCls].join(" ")}>{entry.riskLevel}</span>}
-                  </div>
-                  <div className="shrink-0 text-neutral-600">{new Date(entry.timestamp).toLocaleTimeString()}</div>
+            {allRestoreLogData.slice(0, 5).map((entry, i) => (
+              <div key={i} className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className={entry.outcome === "success" ? "text-emerald-300" : entry.outcome === "partial" ? "text-amber-300" : "text-rose-300"}>
+                    {entry.outcome === "success" ? "✓" : entry.outcome === "partial" ? "◐" : "✕"}
+                  </span>
+                  <span className="truncate text-neutral-400">{entry.fileId}</span>
+                  <span className="shrink-0 text-neutral-600">·</span>
+                  <span className="shrink-0 text-neutral-500">{entry.type === "restore-and-apply" ? "r+apply" : "restore"}</span>
+                  {entry.wasLkg && <span className="shrink-0 text-[9px] uppercase tracking-wide text-emerald-400/60">LKG</span>}
+                  {entry.outcome === "partial" && <span className="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[9px] text-amber-300">partial</span>}
+                  {entry.validation && (
+                    <span className={[
+                      "shrink-0 rounded px-1 py-0.5 text-[9px]",
+                      entry.validation.status === "green" ? "text-emerald-400/60"
+                      : entry.validation.status === "amber" ? "text-amber-400/60"
+                      : "text-rose-400/60",
+                    ].join(" ")}>v:{entry.validation.status}</span>
+                  )}
                 </div>
-              );
-            })}
+                <div className="shrink-0 text-neutral-600">{new Date(entry.timestamp).toLocaleTimeString()}</div>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -2091,11 +2108,35 @@ export default function PrivateNexusV1Mockup() {
             {restoreResult && (
               <div className={[
                 "shrink-0 rounded-xl border p-3",
-                restoreResult.ok ? "border-emerald-400/30 bg-emerald-500/10" : "border-rose-400/30 bg-rose-500/10",
+                restoreResult.ok && restoreResult.validation?.status !== "red"
+                  ? "border-emerald-400/30 bg-emerald-500/10"
+                  : restoreResult.ok && restoreResult.validation?.status === "red"
+                  ? "border-amber-400/30 bg-amber-500/10"
+                  : "border-rose-400/30 bg-rose-500/10",
               ].join(" ")}>
                 <div className="mb-1 flex items-center justify-between">
-                  <div className={["text-[11px] font-semibold uppercase tracking-wide", restoreResult.ok ? "text-emerald-300" : "text-rose-300"].join(" ")}>
-                    {restoreResult.ok ? "Restore complete" : "Restore failed"}
+                  <div className="flex items-center gap-2">
+                    <span className={[
+                      "text-[11px] font-semibold uppercase tracking-wide",
+                      restoreResult.ok && restoreResult.validation?.status !== "red" ? "text-emerald-300"
+                      : restoreResult.ok ? "text-amber-300" : "text-rose-300",
+                    ].join(" ")}>
+                      {restoreResult.ok && restoreResult.validation?.status !== "red"
+                        ? "Restore complete"
+                        : restoreResult.ok
+                        ? "Restore complete · validation failed"
+                        : "Restore failed"}
+                    </span>
+                    {restoreResult.validation && (
+                      <span className={[
+                        "rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wide",
+                        restoreResult.validation.status === "green" ? "bg-emerald-500/20 text-emerald-300"
+                        : restoreResult.validation.status === "amber" ? "bg-amber-500/20 text-amber-300"
+                        : "bg-rose-500/20 text-rose-300",
+                      ].join(" ")}>
+                        validation {restoreResult.validation.status}
+                      </span>
+                    )}
                   </div>
                   <button onClick={() => setRestoreResult(null)} className="text-neutral-600 hover:text-neutral-400 text-xs">×</button>
                 </div>
@@ -2103,6 +2144,11 @@ export default function PrivateNexusV1Mockup() {
                   <div className="space-y-0.5 text-[11px] text-neutral-400">
                     <div>Restored from: <span className="font-mono text-neutral-300">{restoreResult.restoredFrom}</span></div>
                     <div>Safety backup: <span className="font-mono text-neutral-300">{restoreResult.safetyBackup?.fileName}</span></div>
+                    {restoreResult.validation?.status === "red" && restoreResult.validation.errors?.length > 0 && (
+                      <div className="mt-1.5 text-rose-300/80">
+                        {restoreResult.validation.errors.slice(0, 3).map((e, i) => <div key={i}>{e}</div>)}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="text-[11px] text-rose-300">{restoreResult.error}</div>
@@ -2120,15 +2166,27 @@ export default function PrivateNexusV1Mockup() {
                   : "border-rose-400/30 bg-rose-500/10",
               ].join(" ")}>
                 <div className="mb-1.5 flex items-center justify-between">
-                  <div className={[
-                    "text-[11px] font-semibold uppercase tracking-wide",
-                    restoreApplyResult.ok ? "text-blue-300" : restoreApplyResult.phase === "apply" ? "text-amber-300" : "text-rose-300",
-                  ].join(" ")}>
-                    {restoreApplyResult.ok
-                      ? `Restore & Apply complete · ${restoreApplyResult.apply?.action}`
-                      : restoreApplyResult.phase === "apply"
-                      ? `Restored · Apply failed · ${restoreApplyResult.apply?.action}`
-                      : `Restore & Apply failed (${restoreApplyResult.phase})`}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={[
+                      "text-[11px] font-semibold uppercase tracking-wide",
+                      restoreApplyResult.ok ? "text-blue-300" : restoreApplyResult.phase === "apply" ? "text-amber-300" : "text-rose-300",
+                    ].join(" ")}>
+                      {restoreApplyResult.ok
+                        ? `Restore & Apply complete · ${restoreApplyResult.apply?.action}`
+                        : restoreApplyResult.phase === "apply"
+                        ? `Restored · Apply failed · ${restoreApplyResult.apply?.action}`
+                        : `Restore & Apply failed (${restoreApplyResult.phase})`}
+                    </span>
+                    {restoreApplyResult.validation && (
+                      <span className={[
+                        "rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wide",
+                        restoreApplyResult.validation.status === "green" ? "bg-emerald-500/20 text-emerald-300"
+                        : restoreApplyResult.validation.status === "amber" ? "bg-amber-500/20 text-amber-300"
+                        : "bg-rose-500/20 text-rose-300",
+                      ].join(" ")}>
+                        validation {restoreApplyResult.validation.status}
+                      </span>
+                    )}
                   </div>
                   <button onClick={() => setRestoreApplyResult(null)} className="text-neutral-600 hover:text-neutral-400 text-xs">×</button>
                 </div>
@@ -2140,11 +2198,24 @@ export default function PrivateNexusV1Mockup() {
                     )}
                   </div>
                 )}
-                {restoreApplyResult.apply?.output && (
+                {restoreApplyResult.apply?.stderr && !restoreApplyResult.ok && (
+                  <div className="mt-1.5">
+                    <div className="mb-0.5 text-[9px] uppercase tracking-wide text-neutral-600">stderr</div>
+                    <pre className="whitespace-pre-wrap font-mono text-[10px] text-rose-400/80">{restoreApplyResult.apply.stderr}</pre>
+                  </div>
+                )}
+                {restoreApplyResult.apply?.output && !restoreApplyResult.apply?.stderr && (
                   <pre className="mt-1.5 whitespace-pre-wrap font-mono text-[10px] text-neutral-400">{restoreApplyResult.apply.output}</pre>
                 )}
                 {!restoreApplyResult.restoredFrom && restoreApplyResult.error && (
                   <div className="text-[11px] text-rose-300">{restoreApplyResult.error}</div>
+                )}
+                {restoreApplyResult.rollbackRecommendation?.suggested && (
+                  <div className="mt-2 rounded-lg border border-amber-400/25 bg-amber-500/10 px-2.5 py-2">
+                    <div className="mb-0.5 text-[9px] uppercase tracking-wide text-amber-400/80">Rollback recommended</div>
+                    <div className="text-[11px] text-amber-200/90">{restoreApplyResult.rollbackRecommendation.reason}</div>
+                    <div className="mt-1 font-mono text-[10px] text-neutral-400">{restoreApplyResult.rollbackRecommendation.backupFileName}</div>
+                  </div>
                 )}
               </div>
             )}
@@ -2152,18 +2223,52 @@ export default function PrivateNexusV1Mockup() {
             {restoreLogData.length > 0 && (
               <div className="shrink-0 rounded-xl border border-neutral-800 bg-neutral-900/60 p-3">
                 <div className="mb-2 text-[10px] uppercase tracking-wide text-neutral-500">Restore History</div>
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   {restoreLogData.map((entry, i) => {
-                    const riskCls = entry.riskLevel === "safe" ? "text-emerald-400/70" : entry.riskLevel === "warning" ? "text-amber-400/70" : entry.riskLevel === "high_risk" ? "text-rose-400/70" : "text-neutral-600";
+                    const isExpanded = expandedRestoreEntry === i;
+                    const outcomeCls = entry.outcome === "success" ? "text-emerald-400" : entry.outcome === "partial" ? "text-amber-400" : "text-rose-400";
+                    const outcomeIcon = entry.outcome === "success" ? "✓" : entry.outcome === "partial" ? "◐" : "✕";
+                    const hasDetail = entry.phases || entry.validation || entry.rollbackRecommendation?.suggested;
                     return (
-                      <div key={i} className="flex items-center gap-2 text-[11px]">
-                        <span className={entry.outcome === "success" ? "text-emerald-400" : "text-rose-400"}>{entry.outcome === "success" ? "✓" : "✕"}</span>
-                        <span className="text-neutral-300">{entry.type}</span>
-                        {entry.backupLabel && <span className="text-sky-300/70">· {entry.backupLabel}</span>}
-                        {entry.wasLkg && <span className="text-emerald-400/60 text-[9px] uppercase tracking-wide">LKG</span>}
-                        <span className="text-neutral-600">·</span>
-                        <span className="text-neutral-500">{entry.timestamp.slice(0, 19).replace("T", " ")}</span>
-                        {entry.riskLevel && <span className={riskCls}>{entry.riskLevel}</span>}
+                      <div key={i}>
+                        <div
+                          className={["flex items-center gap-2 text-[11px]", hasDetail ? "cursor-pointer hover:opacity-80" : ""].join(" ")}
+                          onClick={() => hasDetail && setExpandedRestoreEntry(isExpanded ? null : i)}
+                        >
+                          <span className={outcomeCls}>{outcomeIcon}</span>
+                          <span className="text-neutral-300">{entry.type}</span>
+                          {entry.backupLabel && <span className="text-sky-300/70">· {entry.backupLabel}</span>}
+                          {entry.wasLkg && <span className="text-[9px] uppercase tracking-wide text-emerald-400/60">LKG</span>}
+                          {entry.outcome === "partial" && <span className="rounded bg-amber-500/20 px-1 py-0.5 text-[9px] text-amber-300">partial</span>}
+                          {entry.validation && (
+                            <span className={[
+                              "rounded px-1 py-0.5 text-[9px]",
+                              entry.validation.status === "green" ? "bg-emerald-500/15 text-emerald-300/80"
+                              : entry.validation.status === "amber" ? "bg-amber-500/15 text-amber-300/80"
+                              : "bg-rose-500/15 text-rose-300/80",
+                            ].join(" ")}>v:{entry.validation.status}</span>
+                          )}
+                          <span className="ml-auto text-neutral-500">{entry.timestamp.slice(0, 19).replace("T", " ")}</span>
+                          {hasDetail && <span className="text-neutral-600">{isExpanded ? "▲" : "▼"}</span>}
+                        </div>
+                        {isExpanded && (
+                          <div className="ml-4 mt-1.5 space-y-1 text-[10px]">
+                            {entry.phases && entry.phases.map((p, pi) => (
+                              <div key={pi} className="flex items-center gap-2">
+                                <span className={p.status === "ok" ? "text-emerald-400/70" : "text-rose-400/70"}>{p.status === "ok" ? "✓" : "✕"}</span>
+                                <span className="text-neutral-400">{p.name}</span>
+                                {p.detail && <span className="text-neutral-600 truncate">{p.detail}</span>}
+                                <span className="ml-auto text-neutral-700">{p.timestamp.slice(11, 19)}</span>
+                              </div>
+                            ))}
+                            {entry.rollbackRecommendation?.suggested && (
+                              <div className="mt-1 rounded border border-amber-400/20 bg-amber-500/10 px-2 py-1.5">
+                                <div className="text-amber-300/80">{entry.rollbackRecommendation.reason}</div>
+                                <div className="mt-0.5 font-mono text-neutral-500">{entry.rollbackRecommendation.backupFileName}</div>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
