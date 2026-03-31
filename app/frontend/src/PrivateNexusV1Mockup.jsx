@@ -419,6 +419,13 @@ export default function PrivateNexusV1Mockup() {
   const [backupLabels, setBackupLabels] = useState({}); // fileName → { label, updatedAt }
   const [labelEditing, setLabelEditing] = useState(null); // null | fileName
   const [labelInput, setLabelInput] = useState("");
+  const [showPruneModal, setShowPruneModal] = useState(false);
+  const [pruneMode, setPruneMode] = useState("count");
+  const [pruneKeepCount, setPruneKeepCount] = useState(5);
+  const [pruneDays, setPruneDays] = useState(30);
+  const [prunePreview, setPrunePreview] = useState(null); // null | { candidates, protected, summary }
+  const [pruneResult, setPruneResult] = useState(null); // null | { deleted, protected, summary }
+  const [pruneLoading, setPruneLoading] = useState(false);
 
   // -------------------------------------------------------------------------
   // API — backup and network come from the backend; app/service data is static
@@ -710,6 +717,55 @@ export default function PrivateNexusV1Mockup() {
       }
     } catch {
       // non-critical
+    }
+  }
+
+  async function fetchPrunePreview() {
+    if (!selectedFile) return;
+    setPruneLoading(true);
+    try {
+      const body = pruneMode === "count"
+        ? { id: selectedFile.id, mode: "count", keep: pruneKeepCount }
+        : { id: selectedFile.id, mode: "age", days: pruneDays };
+      const res = await fetch(`${API_BASE}/api/files/backups/prune-preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (res.ok) setPrunePreview(data);
+    } catch {
+      // non-critical
+    } finally {
+      setPruneLoading(false);
+    }
+  }
+
+  async function executePrune() {
+    if (!selectedFile) return;
+    setPruneLoading(true);
+    try {
+      const body = pruneMode === "count"
+        ? { id: selectedFile.id, mode: "count", keep: pruneKeepCount }
+        : { id: selectedFile.id, mode: "age", days: pruneDays };
+      const res = await fetch(`${API_BASE}/api/files/backups/prune`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setPruneResult(data);
+        setPrunePreview(null);
+        loadFileBackups(selectedFile.id);
+        loadKnownGood(selectedFile.id);
+        loadKnownGoodSummary();
+        loadBackupLabels(selectedFile.id);
+      }
+    } catch {
+      // non-critical
+    } finally {
+      setPruneLoading(false);
     }
   }
 
@@ -2042,14 +2098,22 @@ export default function PrivateNexusV1Mockup() {
                   <div className="text-[10px] uppercase tracking-wide text-neutral-500">
                     Backups ({fileBackups.length})
                   </div>
-                  {selectedBackup && (
+                  <div className="flex items-center gap-2">
+                    {selectedBackup && (
+                      <button
+                        onClick={() => { setSelectedBackup(null); setDiffMode("draft-live"); }}
+                        className="text-[10px] text-neutral-500 hover:text-neutral-300"
+                      >
+                        Close preview
+                      </button>
+                    )}
                     <button
-                      onClick={() => { setSelectedBackup(null); setDiffMode("draft-live"); }}
-                      className="text-[10px] text-neutral-500 hover:text-neutral-300"
+                      onClick={() => { setShowPruneModal(true); setPrunePreview(null); setPruneResult(null); }}
+                      className="text-[10px] text-rose-400/60 hover:text-rose-300"
                     >
-                      Close preview
+                      Prune
                     </button>
-                  )}
+                  </div>
                 </div>
                 <div className="space-y-0.5">
                   {fileBackups.map((backup) => (
@@ -2503,6 +2567,172 @@ export default function PrivateNexusV1Mockup() {
                 Overwrite Live File
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Prune backups modal */}
+      {showPruneModal && selectedFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="flex w-[min(96vw,560px)] flex-col rounded-xl border border-rose-400/25 bg-neutral-900 shadow-2xl">
+
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-neutral-800 px-5 py-4">
+              <div>
+                <div className="font-semibold">Prune Backups</div>
+                <div className="mt-0.5 text-xs text-neutral-500">{selectedFile.label} · {selectedFile.id}</div>
+              </div>
+              <button
+                onClick={() => { setShowPruneModal(false); setPrunePreview(null); setPruneResult(null); }}
+                className="text-xs text-neutral-400 hover:text-white"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="overflow-y-auto px-5 py-4 space-y-4">
+
+              {/* Result banner */}
+              {pruneResult && (
+                <div className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-4 py-3">
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-300">Prune complete</div>
+                  <div className="flex gap-4 text-sm">
+                    <span className="text-rose-300">{pruneResult.summary.deletedCount} deleted</span>
+                    <span className="text-neutral-400">{pruneResult.summary.protectedCount} protected</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Controls */}
+              {!pruneResult && (
+                <>
+                  <div>
+                    <div className="mb-2 text-[10px] uppercase tracking-wide text-neutral-500">Mode</div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => { setPruneMode("count"); setPrunePreview(null); }}
+                        className={["rounded-lg border px-3 py-1.5 text-xs transition", pruneMode === "count" ? "border-rose-400/30 bg-rose-500/15 text-rose-300" : "border-neutral-700 bg-neutral-800/60 text-neutral-400 hover:text-neutral-200"].join(" ")}
+                      >
+                        Keep newest N
+                      </button>
+                      <button
+                        onClick={() => { setPruneMode("age"); setPrunePreview(null); }}
+                        className={["rounded-lg border px-3 py-1.5 text-xs transition", pruneMode === "age" ? "border-rose-400/30 bg-rose-500/15 text-rose-300" : "border-neutral-700 bg-neutral-800/60 text-neutral-400 hover:text-neutral-200"].join(" ")}
+                      >
+                        Delete older than X days
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    {pruneMode === "count" ? (
+                      <div className="flex items-center gap-3">
+                        <label className="text-xs text-neutral-400 shrink-0">Keep newest</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={pruneKeepCount}
+                          onChange={(e) => { setPruneKeepCount(Math.max(0, parseInt(e.target.value) || 0)); setPrunePreview(null); }}
+                          className="w-20 rounded border border-neutral-700 bg-neutral-800/80 px-2 py-1 text-sm text-neutral-200 outline-none focus:border-rose-400/40"
+                        />
+                        <span className="text-xs text-neutral-500">backups per file</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-3">
+                        <label className="text-xs text-neutral-400 shrink-0">Delete older than</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={pruneDays}
+                          onChange={(e) => { setPruneDays(Math.max(1, parseInt(e.target.value) || 1)); setPrunePreview(null); }}
+                          className="w-20 rounded border border-neutral-700 bg-neutral-800/80 px-2 py-1 text-sm text-neutral-200 outline-none focus:border-rose-400/40"
+                        />
+                        <span className="text-xs text-neutral-500">days</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={fetchPrunePreview}
+                    disabled={pruneLoading}
+                    className="rounded-lg border border-neutral-700 bg-neutral-800/80 px-4 py-1.5 text-xs text-neutral-300 hover:border-rose-400/30 hover:text-rose-300 disabled:opacity-40"
+                  >
+                    {pruneLoading ? "Computing…" : "Preview"}
+                  </button>
+                </>
+              )}
+
+              {/* Preview results */}
+              {prunePreview && !pruneResult && (
+                <div className="space-y-3">
+                  {/* Candidates */}
+                  <div>
+                    <div className="mb-1.5 flex items-center gap-2">
+                      <span className="text-[10px] uppercase tracking-wide text-rose-400/80">
+                        Will prune ({prunePreview.summary.candidateCount})
+                      </span>
+                    </div>
+                    {prunePreview.candidates.length === 0 ? (
+                      <div className="text-xs text-neutral-500">Nothing to prune.</div>
+                    ) : (
+                      <div className="space-y-0.5 max-h-40 overflow-y-auto rounded-lg border border-rose-400/15 bg-rose-500/5 px-3 py-2">
+                        {prunePreview.candidates.map((c) => (
+                          <div key={c.fileName} className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="truncate text-neutral-300 font-mono">{c.createdAt.slice(0, 19).replace("T", " ")}</span>
+                            <span className="shrink-0 text-rose-400/70">{c.reason}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Protected */}
+                  {prunePreview.protected.filter((p) => p.reason !== "within-policy").length > 0 && (
+                    <div>
+                      <div className="mb-1.5 text-[10px] uppercase tracking-wide text-neutral-500">
+                        Protected ({prunePreview.protected.filter((p) => p.reason !== "within-policy").length} trust-guarded)
+                      </div>
+                      <div className="space-y-0.5 max-h-32 overflow-y-auto rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2">
+                        {prunePreview.protected.filter((p) => p.reason !== "within-policy").map((p) => (
+                          <div key={p.fileName} className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="truncate text-neutral-400 font-mono">{p.createdAt.slice(0, 19).replace("T", " ")}</span>
+                            <span className={["shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide", p.reason === "known-good" ? "bg-emerald-500/15 text-emerald-300" : "bg-sky-500/15 text-sky-300"].join(" ")}>
+                              {p.reason === "known-good" ? "LKG" : `Label: ${p.label}`}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between border-t border-neutral-800 px-5 py-3">
+              <div className="text-[11px] text-neutral-600">
+                LKG and labeled backups are always preserved.
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { setShowPruneModal(false); setPrunePreview(null); setPruneResult(null); }}
+                  className="rounded bg-neutral-700 px-3 py-1.5 text-xs hover:bg-neutral-600"
+                >
+                  {pruneResult ? "Close" : "Cancel"}
+                </button>
+                {prunePreview && !pruneResult && prunePreview.candidates.length > 0 && (
+                  <button
+                    onClick={executePrune}
+                    disabled={pruneLoading}
+                    className="rounded bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-40"
+                  >
+                    {pruneLoading ? "Pruning…" : `Confirm Prune (${prunePreview.summary.candidateCount})`}
+                  </button>
+                )}
+              </div>
+            </div>
+
           </div>
         </div>
       )}

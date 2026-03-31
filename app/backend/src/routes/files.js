@@ -9,6 +9,7 @@ import { applyFile } from "../fileApply.js";
 import { recordApply, getApplyLog } from "../fileApplyLog.js";
 import { markKnownGood, getKnownGood } from "../fileKnownGood.js";
 import { setBackupLabel, getAllBackupLabelsForFile } from "../backupLabels.js";
+import { computePrunePlan, executeDeleteCandidates } from "../backupRetention.js";
 
 export const filesRouter = Router();
 
@@ -489,6 +490,78 @@ filesRouter.post("/backups/label", (req, res) => {
   }
   const entry = setBackupLabel(id, fileName, label);
   res.json({ ok: true, file: fileName, label: entry?.label ?? "", updatedAt: entry?.updatedAt ?? null });
+});
+
+// POST /api/files/backups/prune-preview — compute prune candidates without deleting
+filesRouter.post("/backups/prune-preview", (req, res) => {
+  const { id, mode, keep, days } = req.body || {};
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  if (mode !== "count" && mode !== "age") {
+    return res.status(400).json({ ok: false, error: "mode must be 'count' or 'age'" });
+  }
+  if (mode === "count" && (typeof keep !== "number" || keep < 0)) {
+    return res.status(400).json({ ok: false, error: "keep must be a non-negative number" });
+  }
+  if (mode === "age" && (typeof days !== "number" || days < 0)) {
+    return res.status(400).json({ ok: false, error: "days must be a non-negative number" });
+  }
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+  const policy = mode === "count" ? { mode, keep } : { mode, days };
+  const plan = computePrunePlan(id, policy);
+  return res.json({
+    ok: true,
+    mode,
+    candidates: plan.candidates,
+    protected: plan.protected,
+    summary: { candidateCount: plan.candidates.length, protectedCount: plan.protected.length },
+  });
+});
+
+// POST /api/files/backups/prune — delete prune candidates
+filesRouter.post("/backups/prune", (req, res) => {
+  const { id, mode, keep, days } = req.body || {};
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  if (mode !== "count" && mode !== "age") {
+    return res.status(400).json({ ok: false, error: "mode must be 'count' or 'age'" });
+  }
+  if (mode === "count" && (typeof keep !== "number" || keep < 0)) {
+    return res.status(400).json({ ok: false, error: "keep must be a non-negative number" });
+  }
+  if (mode === "age" && (typeof days !== "number" || days < 0)) {
+    return res.status(400).json({ ok: false, error: "days must be a non-negative number" });
+  }
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+  const policy = mode === "count" ? { mode, keep } : { mode, days };
+  const plan = computePrunePlan(id, policy);
+
+  if (plan.candidates.length === 0) {
+    return res.json({
+      ok: true,
+      deleted: [],
+      protected: plan.protected,
+      summary: { deletedCount: 0, protectedCount: plan.protected.length },
+    });
+  }
+
+  const deleted = executeDeleteCandidates(plan.candidates);
+  console.log(`[prune] ${id} — deleted ${deleted.length} backups (mode: ${mode})`);
+
+  return res.json({
+    ok: true,
+    deleted,
+    protected: plan.protected,
+    summary: { deletedCount: deleted.length, protectedCount: plan.protected.length },
+  });
 });
 
 // GET /api/files/known-good-summary — LKG trust state for all registered files
