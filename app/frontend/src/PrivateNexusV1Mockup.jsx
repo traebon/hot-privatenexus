@@ -419,6 +419,11 @@ export default function PrivateNexusV1Mockup() {
   const [backupLabels, setBackupLabels] = useState({}); // fileName → { label, updatedAt }
   const [labelEditing, setLabelEditing] = useState(null); // null | fileName
   const [labelInput, setLabelInput] = useState("");
+  const [restorePlan, setRestorePlan] = useState(null); // null | plan object
+  const [restorePlanLoading, setRestorePlanLoading] = useState(false);
+  const [showRestorePlanModal, setShowRestorePlanModal] = useState(false);
+  const [restoreLogData, setRestoreLogData] = useState([]); // file-scoped (last 5, current file)
+  const [allRestoreLogData, setAllRestoreLogData] = useState([]); // global (for Home)
   const [showPruneModal, setShowPruneModal] = useState(false);
   const [pruneMode, setPruneMode] = useState("count");
   const [pruneKeepCount, setPruneKeepCount] = useState(5);
@@ -479,6 +484,7 @@ export default function PrivateNexusV1Mockup() {
       })
       .catch(() => setFilesError("Failed to load file registry"));
     loadAllApplyLog();
+    loadAllRestoreLog();
     loadKnownGoodSummary();
   }, [API_BASE]);
 
@@ -534,6 +540,7 @@ export default function PrivateNexusV1Mockup() {
       loadFileBackups(id);
       loadKnownGood(id);
       loadBackupLabels(id);
+      loadRestoreLog(id);
     } catch (err) {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
     }
@@ -693,6 +700,47 @@ export default function PrivateNexusV1Mockup() {
     }
   }
 
+  async function loadRestoreLog(id) {
+    try {
+      const res = await fetch(`${API_BASE}/api/files/restore-log?fileId=${encodeURIComponent(id)}`);
+      const data = await res.json();
+      if (res.ok) setRestoreLogData((data.log || []).slice(-5).reverse());
+    } catch {
+      // non-critical
+    }
+  }
+
+  async function loadAllRestoreLog() {
+    try {
+      const res = await fetch(`${API_BASE}/api/files/restore-log`);
+      const data = await res.json();
+      if (res.ok) setAllRestoreLogData([...(data.log || [])].reverse());
+    } catch {
+      // non-critical
+    }
+  }
+
+  async function loadRestorePlan(backupFileName) {
+    if (!selectedFile) return;
+    setRestorePlanLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/files/restore-plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: selectedFile.id, file: backupFileName }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setRestorePlan(data.plan);
+        setShowRestorePlanModal(true);
+      }
+    } catch {
+      // non-critical
+    } finally {
+      setRestorePlanLoading(false);
+    }
+  }
+
   async function saveBackupLabel(fileName, label) {
     if (!selectedFile) return;
     try {
@@ -847,6 +895,8 @@ export default function PrivateNexusV1Mockup() {
       loadKnownGood(selectedFile.id);
       loadKnownGoodSummary();
       loadBackupLabels(selectedFile.id);
+      loadRestoreLog(selectedFile.id);
+      loadAllRestoreLog();
 
       // Refresh file list so metadata badges update
       const fl = await fetch(`${API_BASE}/api/files`);
@@ -902,6 +952,8 @@ export default function PrivateNexusV1Mockup() {
       loadKnownGood(fileId);
       loadKnownGoodSummary();
       loadBackupLabels(fileId);
+      loadRestoreLog(fileId);
+      loadAllRestoreLog();
       loadApplyLog(fileId);
       loadAllApplyLog();
 
@@ -1246,6 +1298,30 @@ export default function PrivateNexusV1Mockup() {
           </div>
         )}
       </div>
+
+      {allRestoreLogData.length > 0 && (
+        <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-4">
+          <div className="mb-3 text-sm font-semibold text-neutral-300">Recent Restores</div>
+          <div className="space-y-2 text-xs">
+            {allRestoreLogData.slice(0, 5).map((entry, i) => {
+              const riskCls = entry.riskLevel === "safe" ? "text-emerald-400/60" : entry.riskLevel === "warning" ? "text-amber-400/60" : entry.riskLevel === "high_risk" ? "text-rose-400/60" : "";
+              return (
+                <div key={i} className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className={entry.outcome === "success" ? "text-emerald-300" : "text-rose-300"}>{entry.outcome === "success" ? "✓" : "✕"}</span>
+                    <span className="truncate text-neutral-400">{entry.fileId}</span>
+                    <span className="shrink-0 text-neutral-600">·</span>
+                    <span className="shrink-0 text-neutral-500">{entry.type === "restore-and-apply" ? "r+apply" : "restore"}</span>
+                    {entry.wasLkg && <span className="shrink-0 text-[9px] uppercase tracking-wide text-emerald-400/60">LKG</span>}
+                    {entry.riskLevel && <span className={["shrink-0 text-[9px]", riskCls].join(" ")}>{entry.riskLevel}</span>}
+                  </div>
+                  <div className="shrink-0 text-neutral-600">{new Date(entry.timestamp).toLocaleTimeString()}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {(() => {
         const entries = Object.values(knownGoodSummary);
@@ -2073,6 +2149,28 @@ export default function PrivateNexusV1Mockup() {
               </div>
             )}
 
+            {restoreLogData.length > 0 && (
+              <div className="shrink-0 rounded-xl border border-neutral-800 bg-neutral-900/60 p-3">
+                <div className="mb-2 text-[10px] uppercase tracking-wide text-neutral-500">Restore History</div>
+                <div className="space-y-1">
+                  {restoreLogData.map((entry, i) => {
+                    const riskCls = entry.riskLevel === "safe" ? "text-emerald-400/70" : entry.riskLevel === "warning" ? "text-amber-400/70" : entry.riskLevel === "high_risk" ? "text-rose-400/70" : "text-neutral-600";
+                    return (
+                      <div key={i} className="flex items-center gap-2 text-[11px]">
+                        <span className={entry.outcome === "success" ? "text-emerald-400" : "text-rose-400"}>{entry.outcome === "success" ? "✓" : "✕"}</span>
+                        <span className="text-neutral-300">{entry.type}</span>
+                        {entry.backupLabel && <span className="text-sky-300/70">· {entry.backupLabel}</span>}
+                        {entry.wasLkg && <span className="text-emerald-400/60 text-[9px] uppercase tracking-wide">LKG</span>}
+                        <span className="text-neutral-600">·</span>
+                        <span className="text-neutral-500">{entry.timestamp.slice(0, 19).replace("T", " ")}</span>
+                        {entry.riskLevel && <span className={riskCls}>{entry.riskLevel}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {fileApplyLog.length > 0 && (
               <div className="shrink-0 rounded-xl border border-neutral-800 bg-neutral-900/60 p-3">
                 <div className="mb-2 text-[10px] uppercase tracking-wide text-neutral-500">Apply History</div>
@@ -2196,6 +2294,13 @@ export default function PrivateNexusV1Mockup() {
                           className="text-[10px] text-neutral-500 hover:text-sky-400"
                         >
                           {backupLabels[backup.fileName] ? "Edit label" : "Label"}
+                        </button>
+                        <button
+                          onClick={() => loadRestorePlan(backup.fileName)}
+                          disabled={restorePlanLoading}
+                          className="text-[10px] text-neutral-500 hover:text-purple-400 disabled:opacity-40"
+                        >
+                          Plan
                         </button>
                       </div>
 
@@ -2567,6 +2672,141 @@ export default function PrivateNexusV1Mockup() {
                 Overwrite Live File
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Restore Plan modal */}
+      {showRestorePlanModal && restorePlan && selectedFile && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/70 p-4" style={{ zIndex: 60 }}>
+          <div className="flex w-[min(96vw,580px)] flex-col rounded-xl border border-purple-400/25 bg-neutral-900 shadow-2xl">
+
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-neutral-800 px-5 py-4">
+              <div>
+                <div className="font-semibold">Restore Plan</div>
+                <div className="mt-0.5 text-xs text-neutral-500">{restorePlan.fileLabel} · {restorePlan.fileId}</div>
+              </div>
+              <button
+                onClick={() => { setShowRestorePlanModal(false); setRestorePlan(null); }}
+                className="text-xs text-neutral-400 hover:text-white"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="overflow-y-auto px-5 py-4 space-y-4">
+
+              {/* Risk level */}
+              {(() => {
+                const risk = restorePlan.riskLevel;
+                const badge = risk === "safe"
+                  ? "border-emerald-400/30 bg-emerald-500/15 text-emerald-300"
+                  : risk === "warning"
+                  ? "border-amber-400/30 bg-amber-500/15 text-amber-300"
+                  : "border-rose-400/30 bg-rose-500/15 text-rose-300";
+                const label = risk === "safe" ? "Safe" : risk === "warning" ? "Proceed with caution" : "High risk";
+                return (
+                  <div className={["rounded-lg border px-4 py-3", badge].join(" ")}>
+                    <div className="mb-1 flex items-center gap-2">
+                      <span className="text-sm font-semibold">{label}</span>
+                    </div>
+                    {restorePlan.riskReasons.length > 0 && (
+                      <ul className="mt-1 space-y-0.5">
+                        {restorePlan.riskReasons.map((r, i) => (
+                          <li key={i} className="text-xs opacity-80">{r}</li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className="mt-1.5 text-xs opacity-70 italic">{restorePlan.recommendation}</div>
+                  </div>
+                );
+              })()}
+
+              {/* Source backup */}
+              <div>
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-neutral-500">Source backup</div>
+                <div className="rounded-lg border border-neutral-800 bg-neutral-800/50 px-3 py-2 space-y-1">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-neutral-300 font-mono">
+                      {restorePlan.backup.createdAt ? restorePlan.backup.createdAt.slice(0, 19).replace("T", " ") : restorePlan.backup.fileName}
+                    </span>
+                    {restorePlan.backup.isLkg && (
+                      <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">LKG</span>
+                    )}
+                    {restorePlan.backup.label && (
+                      <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[9px] text-sky-300">{restorePlan.backup.label}</span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-neutral-500">
+                    Differs from live: <span className={restorePlan.backup.driftedFromLive ? "text-amber-300" : "text-emerald-300"}>{restorePlan.backup.driftedFromLive ? "yes" : "no"}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Overwrite */}
+              <div>
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-neutral-500">Overwrite target</div>
+                <div className="rounded-lg border border-neutral-800 bg-neutral-800/50 px-3 py-2 space-y-0.5 text-[11px]">
+                  <div className="text-neutral-400">Live file: <span className={restorePlan.overwrite.liveExists ? "text-neutral-200" : "text-rose-400"}>{restorePlan.overwrite.liveExists ? "exists" : "missing"}</span></div>
+                  {restorePlan.overwrite.liveModifiedAt && (
+                    <div className="text-neutral-500">Last modified: {restorePlan.overwrite.liveModifiedAt.slice(0, 19).replace("T", " ")}</div>
+                  )}
+                  <div className="truncate font-mono text-neutral-600">{restorePlan.livePath}</div>
+                </div>
+              </div>
+
+              {/* Dependencies */}
+              {restorePlan.dependencies.length > 0 && (
+                <div>
+                  <div className="mb-1.5 text-[10px] uppercase tracking-wide text-neutral-500">Dependencies</div>
+                  <div className="space-y-1">
+                    {restorePlan.dependencies.map((dep) => (
+                      <div key={dep.id} className="flex items-center justify-between rounded-lg border border-neutral-800 bg-neutral-800/50 px-3 py-1.5 text-[11px]">
+                        <div>
+                          <span className="text-neutral-300">{dep.label}</span>
+                          {dep.required && <span className="ml-1.5 text-[9px] uppercase tracking-wide text-rose-400/70">required</span>}
+                        </div>
+                        <span className={dep.exists ? "text-emerald-400" : "text-rose-400"}>{dep.exists ? "✓ present" : "✕ missing"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-2 border-t border-neutral-800 px-5 py-3">
+              <button
+                onClick={() => { setShowRestorePlanModal(false); setRestorePlan(null); }}
+                className="rounded bg-neutral-700 px-3 py-1.5 text-xs hover:bg-neutral-600"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  setShowRestorePlanModal(false);
+                  await openBackupContent(restorePlan.backup.fileName);
+                  setShowRestoreConfirm(true);
+                }}
+                className="rounded border border-amber-400/30 bg-amber-500/15 px-3 py-1.5 text-xs text-amber-300 hover:bg-amber-500/25"
+              >
+                Restore
+              </button>
+              {selectedFile.applyStrategy && (
+                <button
+                  onClick={async () => {
+                    setShowRestorePlanModal(false);
+                    await openBackupContent(restorePlan.backup.fileName);
+                    setShowRestoreApplyConfirm(true);
+                  }}
+                  className="rounded border border-blue-400/30 bg-blue-500/15 px-3 py-1.5 text-xs text-blue-300 hover:bg-blue-500/25"
+                >
+                  Restore & Apply
+                </button>
+              )}
+            </div>
+
           </div>
         </div>
       )}

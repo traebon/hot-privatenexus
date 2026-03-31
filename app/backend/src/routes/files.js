@@ -10,6 +10,10 @@ import { recordApply, getApplyLog } from "../fileApplyLog.js";
 import { markKnownGood, getKnownGood } from "../fileKnownGood.js";
 import { setBackupLabel, getAllBackupLabelsForFile } from "../backupLabels.js";
 import { computePrunePlan, executeDeleteCandidates } from "../backupRetention.js";
+import { buildRestorePlan } from "../restorePlanner.js";
+import { recordRestore, getRestoreLog } from "../restoreLog.js";
+import { getKnownGood } from "../fileKnownGood.js";
+import { getBackupLabel } from "../backupLabels.js";
 
 export const filesRouter = Router();
 
@@ -311,6 +315,20 @@ filesRouter.post("/restore", (req, res) => {
     const stats = fs.statSync(file.path);
     console.log(`[restore] ${id} ← ${backupFileName}`);
 
+    const kg = getKnownGood(id);
+    const labelEntry = getBackupLabel(backupFileName);
+    recordRestore({
+      fileId: id,
+      backupFileName,
+      backupLabel: labelEntry?.label ?? null,
+      wasLkg: kg?.fileName === backupFileName,
+      riskLevel: null,
+      type: "restore",
+      outcome: "success",
+      timestamp: new Date().toISOString(),
+      output: null,
+    });
+
     return res.json({
       ok: true,
       id,
@@ -320,6 +338,17 @@ filesRouter.post("/restore", (req, res) => {
     });
   } catch (err) {
     console.error(`Failed to restore ${id} from ${backupFileName}`, err);
+    recordRestore({
+      fileId: id,
+      backupFileName,
+      backupLabel: null,
+      wasLkg: false,
+      riskLevel: null,
+      type: "restore",
+      outcome: "failed",
+      timestamp: new Date().toISOString(),
+      output: err.message,
+    });
     return res.status(500).json({ ok: false, error: "Restore failed" });
   }
 });
@@ -365,6 +394,13 @@ filesRouter.post("/restore-and-apply", (req, res) => {
     console.log(`[restore-and-apply] restored ${id} ← ${backupFileName}`);
   } catch (err) {
     console.error(`Failed to restore ${id}`, err);
+    recordRestore({
+      fileId: id, backupFileName,
+      backupLabel: getBackupLabel(backupFileName)?.label ?? null,
+      wasLkg: getKnownGood(id)?.fileName === backupFileName,
+      riskLevel: null, type: "restore-and-apply", outcome: "failed",
+      timestamp: new Date().toISOString(), output: err.message,
+    });
     return res.status(500).json({ ok: false, error: "Restore phase failed", phase: "restore" });
   }
 
@@ -372,6 +408,13 @@ filesRouter.post("/restore-and-apply", (req, res) => {
   if (file.validatable) {
     const validation = validateFile(file.type, backupContent);
     if (validation.status === "red") {
+      recordRestore({
+        fileId: id, backupFileName,
+        backupLabel: getBackupLabel(backupFileName)?.label ?? null,
+        wasLkg: getKnownGood(id)?.fileName === backupFileName,
+        riskLevel: null, type: "restore-and-apply", outcome: "failed",
+        timestamp: new Date().toISOString(), output: "Validation errors blocked apply",
+      });
       return res.status(422).json({
         ok: false,
         phase: "validate",
@@ -393,6 +436,20 @@ filesRouter.post("/restore-and-apply", (req, res) => {
     timestamp: new Date().toISOString(),
     ok: applyResult.ok,
     output: applyResult.output || "",
+  });
+
+  const raKg = getKnownGood(id);
+  const raLabel = getBackupLabel(backupFileName);
+  recordRestore({
+    fileId: id,
+    backupFileName,
+    backupLabel: raLabel?.label ?? null,
+    wasLkg: raKg?.fileName === backupFileName,
+    riskLevel: null,
+    type: "restore-and-apply",
+    outcome: applyResult.ok ? "success" : "failed",
+    timestamp: new Date().toISOString(),
+    output: applyResult.output || null,
   });
 
   const stats = fs.statSync(file.path);
@@ -562,6 +619,35 @@ filesRouter.post("/backups/prune", (req, res) => {
     protected: plan.protected,
     summary: { deletedCount: deleted.length, protectedCount: plan.protected.length },
   });
+});
+
+// POST /api/files/restore-plan — generate a restore plan without touching the filesystem
+filesRouter.post("/restore-plan", (req, res) => {
+  const { id, file: backupFileName } = req.body || {};
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  if (!backupFileName || typeof backupFileName !== "string") {
+    return res.status(400).json({ ok: false, error: "Backup file name is required" });
+  }
+  const result = buildRestorePlan(id, backupFileName);
+  if (!result.ok) {
+    return res.status(result.error === "File not found in registry" ? 404 : 400).json(result);
+  }
+  return res.json(result);
+});
+
+// GET /api/files/restore-log[?fileId=<id>] — return restore history
+filesRouter.get("/restore-log", (req, res) => {
+  const { fileId } = req.query;
+  const fileIdStr = typeof fileId === "string" && fileId.length > 0 ? fileId : undefined;
+  try {
+    const log = getRestoreLog(fileIdStr);
+    res.json({ ok: true, log });
+  } catch (err) {
+    console.error("Failed to read restore log", err);
+    res.status(500).json({ ok: false, error: "Failed to read restore log" });
+  }
 });
 
 // GET /api/files/known-good-summary — LKG trust state for all registered files

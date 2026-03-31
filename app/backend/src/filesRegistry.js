@@ -14,6 +14,7 @@ const REGISTRY = [
     primary: true,
     applyStrategy: "caddy-reload",
     applyPath: "/etc/caddy/Caddyfile",
+    dependsOn: [],
   },
   {
     id: "privatenexus-compose",
@@ -26,6 +27,9 @@ const REGISTRY = [
     primary: true,
     applyStrategy: "compose-up",
     applyPath: "/root/privatenexus/compose/docker-compose.yml",
+    dependsOn: [
+      { id: "privatenexus-frontend-env", required: false },
+    ],
   },
   {
     id: "privatenexus-frontend-env",
@@ -38,6 +42,7 @@ const REGISTRY = [
     primary: false,
     applyStrategy: "compose-up",
     applyPath: "/root/privatenexus/compose/docker-compose.yml",
+    dependsOn: [],
   },
   {
     id: "privatenexus-backend-server",
@@ -50,6 +55,7 @@ const REGISTRY = [
     primary: false,
     applyStrategy: null,
     applyPath: null,
+    dependsOn: [],
   },
 ];
 
