@@ -8,6 +8,7 @@ import { validateFile } from "../fileValidator.js";
 import { applyFile } from "../fileApply.js";
 import { recordApply, getApplyLog } from "../fileApplyLog.js";
 import { markKnownGood, getKnownGood } from "../fileKnownGood.js";
+import { setBackupLabel, getAllBackupLabelsForFile } from "../backupLabels.js";
 
 export const filesRouter = Router();
 
@@ -447,6 +448,76 @@ filesRouter.post("/backups/mark-known-good", (req, res) => {
   }
   const knownGood = markKnownGood(id, fileName);
   res.json({ ok: true, knownGood });
+});
+
+// GET /api/files/backups/labels?id=<fileId> — all labels for a file's backups
+filesRouter.get("/backups/labels", (req, res) => {
+  const { id } = req.query;
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+  const labels = getAllBackupLabelsForFile(id);
+  res.json({ ok: true, labels });
+});
+
+// POST /api/files/backups/label — set or clear a label for a backup
+filesRouter.post("/backups/label", (req, res) => {
+  const { id, file: fileName, label } = req.body || {};
+  if (!id || typeof id !== "string") {
+    return res.status(400).json({ ok: false, error: "File id is required" });
+  }
+  if (!fileName || typeof fileName !== "string") {
+    return res.status(400).json({ ok: false, error: "Backup file name is required" });
+  }
+  if (typeof label !== "string") {
+    return res.status(400).json({ ok: false, error: "Label must be a string" });
+  }
+  const file = getRegisteredFileById(id);
+  if (!file) {
+    return res.status(404).json({ ok: false, error: "File not found in registry" });
+  }
+  if (!fileName.startsWith(`${id}__`) || !fileName.endsWith(".bak")) {
+    return res.status(403).json({ ok: false, error: "Backup does not belong to this file" });
+  }
+  const content = readBackup(fileName);
+  if (content === null) {
+    return res.status(404).json({ ok: false, error: "Backup not found" });
+  }
+  const entry = setBackupLabel(id, fileName, label);
+  res.json({ ok: true, file: fileName, label: entry?.label ?? "", updatedAt: entry?.updatedAt ?? null });
+});
+
+// GET /api/files/known-good-summary — LKG trust state for all registered files
+filesRouter.get("/known-good-summary", (req, res) => {
+  const files = listRegisteredFiles();
+  const summary = {};
+
+  for (const file of files) {
+    const kg = getKnownGood(file.id);
+    if (!kg) {
+      summary[file.id] = { hasKnownGood: false, knownGoodFile: null, drifted: false };
+      continue;
+    }
+
+    const kgContent = readBackup(kg.fileName);
+    let drifted = false;
+    if (kgContent !== null) {
+      try {
+        const liveContent = fs.existsSync(file.path) ? fs.readFileSync(file.path, "utf8") : "";
+        drifted = liveContent !== kgContent;
+      } catch {
+        // can't read live file — assume aligned
+      }
+    }
+
+    summary[file.id] = { hasKnownGood: true, knownGoodFile: kg.fileName, drifted };
+  }
+
+  res.json({ ok: true, files: summary });
 });
 
 // GET /api/files/apply-log[?fileId=<id>] — return apply history

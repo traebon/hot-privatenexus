@@ -186,6 +186,15 @@ export default function PrivateNexusV1Mockup() {
                             Pending apply
                           </span>
                         )}
+                        {stackHasDrift(p.project) ? (
+                          <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-300">
+                            Baseline drift
+                          </span>
+                        ) : stackHasKnownGood(p.project) ? (
+                          <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] text-emerald-300">
+                            Trusted baseline
+                          </span>
+                        ) : null}
                         <button
                           onClick={() => editStackConfig(p.project)}
                           className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-300 hover:bg-rose-500/20"
@@ -406,6 +415,10 @@ export default function PrivateNexusV1Mockup() {
   const [showRestoreApplyConfirm, setShowRestoreApplyConfirm] = useState(false);
   const [restoreApplyResult, setRestoreApplyResult] = useState(null); // null | { ok, phase, restoredFrom, safetyBackup, apply, error }
   const [lkg, setLkg] = useState(null); // null | { fileName, markedAt }
+  const [knownGoodSummary, setKnownGoodSummary] = useState({}); // fileId → { hasKnownGood, knownGoodFile, drifted }
+  const [backupLabels, setBackupLabels] = useState({}); // fileName → { label, updatedAt }
+  const [labelEditing, setLabelEditing] = useState(null); // null | fileName
+  const [labelInput, setLabelInput] = useState("");
 
   // -------------------------------------------------------------------------
   // API — backup and network come from the backend; app/service data is static
@@ -459,6 +472,7 @@ export default function PrivateNexusV1Mockup() {
       })
       .catch(() => setFilesError("Failed to load file registry"));
     loadAllApplyLog();
+    loadKnownGoodSummary();
   }, [API_BASE]);
 
   async function loadApplyLog(id) {
@@ -512,6 +526,7 @@ export default function PrivateNexusV1Mockup() {
       loadApplyLog(id);
       loadFileBackups(id);
       loadKnownGood(id);
+      loadBackupLabels(id);
     } catch (err) {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
     }
@@ -567,6 +582,7 @@ export default function PrivateNexusV1Mockup() {
       const flData = await fl.json();
       setFilesData(Array.isArray(flData) ? flData : []);
       loadFileBackups(selectedFile.id);
+      loadKnownGoodSummary();
     } catch (err) {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ERROR: ${err.message}`, ...prev]);
       setShowSaveLiveConfirm(false);
@@ -650,6 +666,53 @@ export default function PrivateNexusV1Mockup() {
     }
   }
 
+  async function loadKnownGoodSummary() {
+    try {
+      const res = await fetch(`${API_BASE}/api/files/known-good-summary`);
+      const data = await res.json();
+      if (res.ok) setKnownGoodSummary(data.files || {});
+    } catch {
+      // non-critical
+    }
+  }
+
+  async function loadBackupLabels(id) {
+    try {
+      const res = await fetch(`${API_BASE}/api/files/backups/labels?id=${encodeURIComponent(id)}`);
+      const data = await res.json();
+      if (res.ok) setBackupLabels(data.labels || {});
+    } catch {
+      // non-critical
+    }
+  }
+
+  async function saveBackupLabel(fileName, label) {
+    if (!selectedFile) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/files/backups/label`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: selectedFile.id, file: fileName, label }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setBackupLabels((prev) => {
+          const next = { ...prev };
+          if (data.label) {
+            next[fileName] = { label: data.label, updatedAt: data.updatedAt };
+          } else {
+            delete next[fileName];
+          }
+          return next;
+        });
+        setLabelEditing(null);
+        setLabelInput("");
+      }
+    } catch {
+      // non-critical
+    }
+  }
+
   async function markAsKnownGood(fileName) {
     if (!selectedFile) return;
     try {
@@ -659,7 +722,10 @@ export default function PrivateNexusV1Mockup() {
         body: JSON.stringify({ id: selectedFile.id, file: fileName }),
       });
       const data = await res.json();
-      if (res.ok) setLkg(data.knownGood);
+      if (res.ok) {
+        setLkg(data.knownGood);
+        loadKnownGoodSummary();
+      }
     } catch {
       // non-critical
     }
@@ -723,6 +789,8 @@ export default function PrivateNexusV1Mockup() {
       setDiffMode("draft-live");
       loadFileBackups(selectedFile.id);
       loadKnownGood(selectedFile.id);
+      loadKnownGoodSummary();
+      loadBackupLabels(selectedFile.id);
 
       // Refresh file list so metadata badges update
       const fl = await fetch(`${API_BASE}/api/files`);
@@ -776,6 +844,8 @@ export default function PrivateNexusV1Mockup() {
       setDiffMode("draft-live");
       loadFileBackups(fileId);
       loadKnownGood(fileId);
+      loadKnownGoodSummary();
+      loadBackupLabels(fileId);
       loadApplyLog(fileId);
       loadAllApplyLog();
 
@@ -854,6 +924,12 @@ export default function PrivateNexusV1Mockup() {
   }
   function stackHasDraft(stackName) {
     return filesData.some((f) => f.stack === stackName && f.hasDraft);
+  }
+  function stackHasKnownGood(stackName) {
+    return filesData.some((f) => f.stack === stackName && knownGoodSummary[f.id]?.hasKnownGood);
+  }
+  function stackHasDrift(stackName) {
+    return filesData.some((f) => f.stack === stackName && knownGoodSummary[f.id]?.drifted);
   }
   const FILE_TYPE_ORDER = ["compose", "env", "caddy", "dockerfile", "docs", "javascript"];
   function getPrimaryFile(files) {
@@ -1114,6 +1190,34 @@ export default function PrivateNexusV1Mockup() {
           </div>
         )}
       </div>
+
+      {(() => {
+        const entries = Object.values(knownGoodSummary);
+        const totalLkg = entries.filter((e) => e.hasKnownGood).length;
+        if (totalLkg === 0) return null;
+        const driftedFiles = entries.filter((e) => e.drifted).length;
+        const uniqueStacks = [...new Set(filesData.map((f) => f.stack))];
+        const driftedStacks = uniqueStacks.filter((s) => stackHasDrift(s)).length;
+        return (
+          <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/10 to-green-500/5 p-4">
+            <div className="mb-3 text-sm font-semibold text-neutral-200">Trust Summary</div>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-xl border border-neutral-800 bg-neutral-900/50 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wide text-neutral-500">Baselines</div>
+                <div className="mt-1 text-lg font-semibold text-emerald-300">{totalLkg}</div>
+              </div>
+              <div className="rounded-xl border border-neutral-800 bg-neutral-900/50 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wide text-neutral-500">Drifted files</div>
+                <div className={["mt-1 text-lg font-semibold", driftedFiles > 0 ? "text-amber-300" : "text-neutral-400"].join(" ")}>{driftedFiles}</div>
+              </div>
+              <div className="rounded-xl border border-neutral-800 bg-neutral-900/50 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wide text-neutral-500">Drifted stacks</div>
+                <div className={["mt-1 text-lg font-semibold", driftedStacks > 0 ? "text-amber-300" : "text-neutral-400"].join(" ")}>{driftedStacks}</div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="grid grid-cols-2 gap-4">
         <div className="rounded-2xl border border-cyan-400/20 bg-gradient-to-br from-cyan-500/10 to-blue-500/5 p-4">
@@ -1507,6 +1611,23 @@ export default function PrivateNexusV1Mockup() {
                         {file.draftModifiedAt && <span className="text-amber-400/60">· {file.draftModifiedAt.slice(0, 10)}</span>}
                       </div>
                     )}
+
+                    {(() => {
+                      const trust = knownGoodSummary[file.id];
+                      if (!trust?.hasKnownGood) return null;
+                      return (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          <span className="inline-flex items-center rounded-full bg-emerald-500/15 px-2 py-1 text-[10px] text-emerald-300">
+                            LKG set
+                          </span>
+                          {trust.drifted && (
+                            <span className="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-1 text-[10px] text-amber-300">
+                              Drift from LKG
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {(() => {
                       const latest = getLatestApply(file.id);
@@ -1935,62 +2056,139 @@ export default function PrivateNexusV1Mockup() {
                     <div
                       key={backup.fileName}
                       className={[
-                        "flex items-center gap-2 rounded px-2 py-1 text-[11px]",
+                        "rounded px-2 py-1 text-[11px]",
                         selectedBackup?.fileName === backup.fileName ? "bg-neutral-800" : "",
                       ].join(" ")}
                     >
-                      <span className="flex-1 text-neutral-400">
-                        {backup.createdAt.slice(0, 19).replace("T", " ")}
-                      </span>
-                      {lkg?.fileName === backup.fileName && (
-                        <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
-                          LKG
+                      {/* Main row */}
+                      <div className="flex items-center gap-2">
+                        <span className="flex-1 text-neutral-400">
+                          {backup.createdAt.slice(0, 19).replace("T", " ")}
                         </span>
-                      )}
-                      <span className="text-neutral-600">{backup.size} B</span>
-                      <button
-                        onClick={() => openBackupContent(backup.fileName)}
-                        className="text-[10px] text-blue-400 hover:text-blue-300"
-                      >
-                        {selectedBackup?.fileName === backup.fileName ? "Hide" : "View"}
-                      </button>
-                      <button
-                        onClick={async () => {
-                          if (selectedBackup?.fileName !== backup.fileName) {
-                            await openBackupContent(backup.fileName);
-                          }
-                          setShowRestoreConfirm(true);
-                        }}
-                        className="text-[10px] text-amber-400 hover:text-amber-300"
-                      >
-                        Restore
-                      </button>
-                      {selectedFile.applyStrategy && (
+                        {lkg?.fileName === backup.fileName && (
+                          <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
+                            LKG
+                          </span>
+                        )}
+                        {backupLabels[backup.fileName] && (
+                          <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[9px] text-sky-300">
+                            {backupLabels[backup.fileName].label}
+                          </span>
+                        )}
+                        <span className="text-neutral-600">{backup.size} B</span>
+                        <button
+                          onClick={() => openBackupContent(backup.fileName)}
+                          className="text-[10px] text-blue-400 hover:text-blue-300"
+                        >
+                          {selectedBackup?.fileName === backup.fileName ? "Hide" : "View"}
+                        </button>
                         <button
                           onClick={async () => {
                             if (selectedBackup?.fileName !== backup.fileName) {
                               await openBackupContent(backup.fileName);
                             }
-                            setShowRestoreApplyConfirm(true);
+                            setShowRestoreConfirm(true);
                           }}
-                          className="text-[10px] text-blue-400 hover:text-blue-300"
+                          className="text-[10px] text-amber-400 hover:text-amber-300"
                         >
-                          Restore & Apply
+                          Restore
                         </button>
+                        {selectedFile.applyStrategy && (
+                          <button
+                            onClick={async () => {
+                              if (selectedBackup?.fileName !== backup.fileName) {
+                                await openBackupContent(backup.fileName);
+                              }
+                              setShowRestoreApplyConfirm(true);
+                            }}
+                            className="text-[10px] text-blue-400 hover:text-blue-300"
+                          >
+                            Restore & Apply
+                          </button>
+                        )}
+                        <button
+                          onClick={() => markAsKnownGood(backup.fileName)}
+                          className={[
+                            "text-[10px] transition",
+                            lkg?.fileName === backup.fileName
+                              ? "text-emerald-400 cursor-default"
+                              : "text-neutral-600 hover:text-emerald-400",
+                          ].join(" ")}
+                          title={lkg?.fileName === backup.fileName ? "This is the current LKG" : "Mark as Last-Known-Good"}
+                          disabled={lkg?.fileName === backup.fileName}
+                        >
+                          {lkg?.fileName === backup.fileName ? "LKG ✓" : "Mark LKG"}
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (labelEditing === backup.fileName) {
+                              setLabelEditing(null);
+                              setLabelInput("");
+                            } else {
+                              setLabelEditing(backup.fileName);
+                              setLabelInput(backupLabels[backup.fileName]?.label || "");
+                            }
+                          }}
+                          className="text-[10px] text-neutral-500 hover:text-sky-400"
+                        >
+                          {backupLabels[backup.fileName] ? "Edit label" : "Label"}
+                        </button>
+                      </div>
+
+                      {/* Inline label editor */}
+                      {labelEditing === backup.fileName && (
+                        <div className="mt-1.5 space-y-1.5 pb-0.5">
+                          <div className="flex flex-wrap gap-1">
+                            {["Stable", "Before upgrade", "Rollback point", "Known bad", "Pre-hotfix"].map((preset) => (
+                              <button
+                                key={preset}
+                                onClick={() => setLabelInput(preset)}
+                                className={[
+                                  "rounded border px-2 py-0.5 text-[10px] transition",
+                                  labelInput === preset
+                                    ? "border-sky-400/40 bg-sky-500/20 text-sky-300"
+                                    : "border-neutral-700 bg-neutral-800/60 text-neutral-400 hover:text-neutral-200",
+                                ].join(" ")}
+                              >
+                                {preset}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              value={labelInput}
+                              onChange={(e) => setLabelInput(e.target.value.slice(0, 64))}
+                              placeholder="Custom label…"
+                              className="flex-1 rounded border border-neutral-700 bg-neutral-800/80 px-2 py-1 text-[11px] text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-sky-400/40"
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") saveBackupLabel(backup.fileName, labelInput);
+                                if (e.key === "Escape") { setLabelEditing(null); setLabelInput(""); }
+                              }}
+                              autoFocus
+                            />
+                            <button
+                              onClick={() => saveBackupLabel(backup.fileName, labelInput)}
+                              className="rounded border border-sky-400/30 bg-sky-500/15 px-2 py-1 text-[10px] text-sky-300 hover:bg-sky-500/25"
+                            >
+                              Save
+                            </button>
+                            <button
+                              onClick={() => { setLabelEditing(null); setLabelInput(""); }}
+                              className="rounded border border-neutral-700 bg-neutral-800/60 px-2 py-1 text-[10px] text-neutral-400 hover:text-neutral-200"
+                            >
+                              Cancel
+                            </button>
+                            {backupLabels[backup.fileName] && (
+                              <button
+                                onClick={() => saveBackupLabel(backup.fileName, "")}
+                                className="rounded border border-neutral-700 bg-neutral-800/60 px-2 py-1 text-[10px] text-neutral-500 hover:text-rose-400"
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                        </div>
                       )}
-                      <button
-                        onClick={() => markAsKnownGood(backup.fileName)}
-                        className={[
-                          "text-[10px] transition",
-                          lkg?.fileName === backup.fileName
-                            ? "text-emerald-400 cursor-default"
-                            : "text-neutral-600 hover:text-emerald-400",
-                        ].join(" ")}
-                        title={lkg?.fileName === backup.fileName ? "This is the current LKG" : "Mark as Last-Known-Good"}
-                        disabled={lkg?.fileName === backup.fileName}
-                      >
-                        {lkg?.fileName === backup.fileName ? "LKG ✓" : "Mark LKG"}
-                      </button>
                     </div>
                   ))}
                 </div>
