@@ -512,6 +512,13 @@ function PrivateNexusDashboard({ authUser }) {
   const [workspacesData, setWorkspacesData] = useState([]);
   const [slugTouched, setSlugTouched] = useState(false);
   const [showArchivedServices, setShowArchivedServices] = useState(false);
+  // Service detail
+  const [selectedService, setSelectedService] = useState(null);
+  const [serviceHealthHistory, setServiceHealthHistory] = useState([]);
+  const [serviceHistoryLoading, setServiceHistoryLoading] = useState(false);
+  const [serviceActionPending, setServiceActionPending] = useState(null);
+  const [serviceActionError, setServiceActionError] = useState(null);
+  const [serviceActionConfirm, setServiceActionConfirm] = useState(null);
   // DNS state
   const [dnsZones, setDnsZones] = useState([]);
   const [dnsSelectedZone, setDnsSelectedZone] = useState(null);
@@ -2707,6 +2714,7 @@ function PrivateNexusDashboard({ authUser }) {
         if (editingService) return prev.map((s) => s.id === data.id ? data : s);
         return [...prev, data];
       });
+      if (editingService && selectedService?.id === data.id) setSelectedService(data);
     } catch { setServiceFormError("Network error"); }
     setServiceSaving(false);
   }
@@ -2721,6 +2729,261 @@ function PrivateNexusDashboard({ authUser }) {
       setServicesData((prev) => prev.map((s) => s.id === data.id ? data : s).filter((s) => showArchivedServices || !s.archived));
     }
   }
+
+  function openServiceDetail(svc) {
+    setSelectedService(svc);
+    setServiceHealthHistory([]);
+    setServiceActionError(null);
+    setServiceHistoryLoading(true);
+    fetch(`${API_BASE}/api/services/${svc.id}/health-history?limit=40`)
+      .then((r) => r.json())
+      .then((d) => { setServiceHealthHistory(d.events || []); setServiceHistoryLoading(false); })
+      .catch(() => setServiceHistoryLoading(false));
+  }
+
+  function closeServiceDetail() {
+    setSelectedService(null);
+    setServiceHealthHistory([]);
+    setServiceActionError(null);
+    setServiceActionConfirm(null);
+  }
+
+  async function executeServiceAction(action) {
+    if (!selectedService) return;
+    setServiceActionPending(action);
+    setServiceActionError(null);
+    try {
+      if (action === "health-refresh") {
+        const r = await fetch(`${API_BASE}/api/services/health`);
+        const d = await r.json();
+        if (d.ok && d.results) {
+          const result = d.results.find((x) => x.id === selectedService.id);
+          if (result) {
+            setSelectedService((prev) => ({ ...prev, status: result.status, updated_at: new Date().toISOString() }));
+            setServicesData((prev) => prev.map((s) => s.id === selectedService.id ? { ...s, status: result.status } : s));
+          }
+          const hr = await fetch(`${API_BASE}/api/services/${selectedService.id}/health-history?limit=40`);
+          const hd = await hr.json();
+          setServiceHealthHistory(hd.events || []);
+        }
+      }
+    } catch (err) {
+      setServiceActionError("Action failed: " + err.message);
+    } finally {
+      setServiceActionPending(null);
+    }
+  }
+
+  const serviceActionModal = serviceActionConfirm && selectedService && (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="w-full max-w-sm rounded-2xl border border-emerald-400/20 bg-neutral-950 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-neutral-800 px-6 py-4">
+          <div className="text-base font-semibold">{serviceActionConfirm.label}</div>
+          <button onClick={() => setServiceActionConfirm(null)} className="text-neutral-500 hover:text-white text-lg">✕</button>
+        </div>
+        <div className="px-6 py-4 space-y-2 text-sm text-neutral-400">
+          <div className="font-medium text-neutral-200">{selectedService.name}</div>
+          <div>{serviceActionConfirm.desc}</div>
+          <div className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+            This action will be recorded in the audit log.
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 border-t border-neutral-800 px-6 py-4">
+          <button onClick={() => setServiceActionConfirm(null)}
+            className="rounded-lg border border-neutral-700 px-4 py-2 text-xs text-neutral-400 hover:text-white">
+            Cancel
+          </button>
+          <button onClick={() => { executeServiceAction(serviceActionConfirm.action); setServiceActionConfirm(null); }}
+            className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-xs text-emerald-300 hover:bg-emerald-500/20">
+            Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const serviceDetailView = selectedService && (
+    <>
+      {serviceActionModal}
+      <div className="space-y-4">
+        {/* Detail header */}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-teal-400/20 bg-gradient-to-r from-teal-500/10 via-cyan-500/10 to-blue-500/10 p-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <button onClick={closeServiceDetail}
+              className="shrink-0 rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-400 hover:border-teal-400/30 hover:text-teal-300">
+              ← Back
+            </button>
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-wider text-teal-300/80">Service Detail</div>
+              <div className="truncate text-lg font-semibold">{selectedService.name}</div>
+            </div>
+            <span className={["shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-medium capitalize", STATUS_STYLES[selectedService.status] || STATUS_STYLES.unknown].join(" ")}>
+              {selectedService.status}
+            </span>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {selectedService.access_url && (
+              <a href={selectedService.access_url} target="_blank" rel="noreferrer"
+                className="rounded-lg border border-teal-400/30 bg-teal-500/10 px-3 py-1.5 text-xs text-teal-300 hover:bg-teal-500/20">
+                Open ↗
+              </a>
+            )}
+            {can("operator") && selectedService.health_endpoint && (
+              <button
+                onClick={() => setServiceActionConfirm({ action: "health-refresh", label: "Refresh Health Check", desc: `Run a live probe against the health endpoint and update the service status.` })}
+                disabled={!!serviceActionPending}
+                className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50">
+                {serviceActionPending === "health-refresh" ? "Checking…" : "Refresh Health"}
+              </button>
+            )}
+            {can("admin") && (
+              <button onClick={() => openEditService(selectedService)}
+                className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-400 hover:border-teal-400/30 hover:text-teal-300">
+                Edit
+              </button>
+            )}
+          </div>
+        </div>
+
+        {serviceActionError && (
+          <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-xs text-rose-300">
+            {serviceActionError}
+          </div>
+        )}
+
+        {/* Metadata grid */}
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          {[
+            { label: "Category",     value: CATEGORY_LABELS[selectedService.category] || selectedService.category },
+            { label: "Runtime",      value: selectedService.runtime_type },
+            { label: "Access",       value: selectedService.access_mode.replace(/_/g, " ") },
+            { label: "Owner",        value: selectedService.owner || "—" },
+            { label: "Backup",       value: selectedService.backup_policy === "none" ? "No backup" : selectedService.backup_policy },
+            { label: "Workspace",    value: selectedService.workspace_name || "—" },
+            { label: "Health check", value: selectedService.health_endpoint ? "Configured" : "Not set" },
+            { label: "Last updated", value: new Date(selectedService.updated_at).toLocaleString() },
+          ].map(({ label, value }) => (
+            <div key={label} className="rounded-xl border border-neutral-800 bg-neutral-900/70 px-3 py-2.5">
+              <div className="text-[10px] uppercase tracking-wider text-neutral-500">{label}</div>
+              <div className="mt-0.5 text-sm font-medium capitalize text-neutral-200">{value}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Description */}
+        {selectedService.description && (
+          <div className="rounded-xl border border-neutral-800 bg-neutral-900/70 px-4 py-3 text-sm text-neutral-400">
+            {selectedService.description}
+          </div>
+        )}
+
+        {/* Health history */}
+        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-sm font-semibold text-neutral-200">Health History</div>
+            <span className="text-[10px] text-neutral-600">
+              {serviceHealthHistory.length} events · scheduler runs every 2 min
+            </span>
+          </div>
+
+          {!selectedService.health_endpoint ? (
+            <div className="rounded-lg bg-neutral-800/60 px-3 py-2.5 text-xs text-neutral-500">
+              No health endpoint configured. Edit this service to add one.
+            </div>
+          ) : (
+            <>
+              {/* Sparkline */}
+              {serviceHealthHistory.length > 0 && (
+                <div className="mb-4 flex items-end gap-[3px]">
+                  {[...serviceHealthHistory].reverse().map((ev) => (
+                    <div
+                      key={ev.id}
+                      title={`${new Date(ev.ts).toLocaleString()} — ${ev.status}${ev.latency_ms ? ` · ${ev.latency_ms}ms` : ""}${ev.error ? ` · ${ev.error}` : ""}`}
+                      className={[
+                        "w-2 rounded-sm transition-all",
+                        ev.status === "healthy"  ? "h-6 bg-emerald-500/70"
+                        : ev.status === "warning"  ? "h-5 bg-amber-500/70"
+                        : ev.status === "degraded" ? "h-4 bg-orange-500/70"
+                        : ev.status === "down"     ? "h-3 bg-rose-500/80"
+                        : "h-2 bg-neutral-600",
+                      ].join(" ")}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {serviceHistoryLoading && (
+                <div className="py-4 text-center text-xs text-neutral-600">Loading history…</div>
+              )}
+
+              {!serviceHistoryLoading && serviceHealthHistory.length === 0 && (
+                <div className="rounded-lg bg-neutral-800/60 px-3 py-2.5 text-xs text-neutral-500">
+                  No events recorded yet — first probe fires 15 s after backend start, then every 2 min.
+                </div>
+              )}
+
+              {!serviceHistoryLoading && serviceHealthHistory.length > 0 && (
+                <div className="overflow-hidden rounded-xl border border-neutral-800">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-neutral-800 bg-neutral-800/60">
+                        <th className="px-3 py-2 text-left font-medium text-neutral-500">Time</th>
+                        <th className="px-3 py-2 text-left font-medium text-neutral-500">Status</th>
+                        <th className="px-3 py-2 text-left font-medium text-neutral-500">HTTP</th>
+                        <th className="px-3 py-2 text-left font-medium text-neutral-500">Latency</th>
+                        <th className="px-3 py-2 text-left font-medium text-neutral-500">Source</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {serviceHealthHistory.map((ev) => (
+                        <tr key={ev.id} className="border-b border-neutral-800/50 last:border-0 hover:bg-neutral-800/30">
+                          <td className="px-3 py-2 font-mono text-neutral-400">
+                            {new Date(ev.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                            <span className="ml-1.5 text-[10px] text-neutral-600">
+                              {new Date(ev.ts).toLocaleDateString([], { month: "short", day: "numeric" })}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2">
+                            <span className={["rounded-full border px-2 py-0.5 text-[10px] font-medium capitalize", STATUS_STYLES[ev.status] || STATUS_STYLES.unknown].join(" ")}>
+                              {ev.status}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 font-mono text-neutral-400">{ev.status_code ?? "—"}</td>
+                          <td className="px-3 py-2 text-neutral-400">
+                            {ev.latency_ms != null ? `${ev.latency_ms}ms` : "—"}
+                          </td>
+                          <td className="px-3 py-2">
+                            <span className={["rounded-full px-1.5 py-0.5 text-[10px]", ev.source === "scheduler" ? "text-cyan-500/60" : "text-teal-400/60"].join(" ")}>
+                              {ev.source}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Recovery score */}
+        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-sm font-semibold text-neutral-200">Recovery Score</div>
+            <span className="rounded-full bg-neutral-800 px-2.5 py-0.5 text-[10px] text-neutral-500">Not calculated</span>
+          </div>
+          <div className="flex items-center gap-4 text-xs text-neutral-500">
+            <div>Backup policy: <span className={["font-medium", selectedService.backup_policy === "none" ? "text-amber-400" : "text-emerald-400"].join(" ")}>{selectedService.backup_policy}</span></div>
+            <div>Runtime: <span className="font-medium text-neutral-300">{selectedService.runtime_type}</span></div>
+          </div>
+          <div className="mt-2 rounded-lg bg-neutral-800/60 px-3 py-2 text-xs text-neutral-500">
+            Recovery score requires backup records. Sandbox restore testing is planned for v2.0.
+          </div>
+        </div>
+      </div>
+    </>
+  );
 
   const serviceGroups = (() => {
     const groups = {};
@@ -3116,6 +3379,7 @@ function PrivateNexusDashboard({ authUser }) {
 
   const inventoryBoard = (
     <div className="space-y-4">
+      {selectedService ? serviceDetailView : <>
       {/* Header */}
       <div className="rounded-2xl border border-teal-400/20 bg-gradient-to-r from-teal-500/10 via-cyan-500/10 to-blue-500/10 p-4">
         <div className="flex items-center justify-between">
@@ -3281,25 +3545,32 @@ function PrivateNexusDashboard({ authUser }) {
                     </div>
                   )}
 
-                  {/* Admin actions */}
-                  {can("admin") && (
-                    <div className="mt-3 flex gap-2">
-                      <button onClick={() => openEditService(svc)}
-                        className="rounded-lg border border-neutral-700 px-3 py-1 text-[10px] text-neutral-400 hover:border-teal-400/30 hover:text-teal-300">
-                        Edit
-                      </button>
-                      <button onClick={() => archiveService(svc)}
-                        className="rounded-lg border border-neutral-700 px-3 py-1 text-[10px] text-neutral-400 hover:border-amber-400/30 hover:text-amber-300">
-                        {svc.archived ? "Unarchive" : "Archive"}
-                      </button>
-                    </div>
-                  )}
+                  {/* Card actions */}
+                  <div className="mt-3 flex gap-2">
+                    <button onClick={() => openServiceDetail(svc)}
+                      className="rounded-lg border border-teal-400/30 bg-teal-500/10 px-3 py-1 text-[10px] text-teal-300 hover:bg-teal-500/20">
+                      View
+                    </button>
+                    {can("admin") && (
+                      <>
+                        <button onClick={() => openEditService(svc)}
+                          className="rounded-lg border border-neutral-700 px-3 py-1 text-[10px] text-neutral-400 hover:border-teal-400/30 hover:text-teal-300">
+                          Edit
+                        </button>
+                        <button onClick={() => archiveService(svc)}
+                          className="rounded-lg border border-neutral-700 px-3 py-1 text-[10px] text-neutral-400 hover:border-amber-400/30 hover:text-amber-300">
+                          {svc.archived ? "Unarchive" : "Archive"}
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               );
             })}
           </div>
         </div>
       ))}
+      </>}
     </div>
   );
 
