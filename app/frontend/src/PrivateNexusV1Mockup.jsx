@@ -461,7 +461,7 @@ function PrivateNexusDashboard({ authUser }) {
   const [activityMaxId, setActivityMaxId]         = useState("0");
   const [activityNewCount, setActivityNewCount]   = useState(0);
   const [activityPolling, setActivityPolling]     = useState(true);
-  const [activityFilter, setActivityFilter]       = useState({ action_prefix: "", username: "", outcome: "", from_ts: "", to_ts: "" });
+  const [activityFilter, setActivityFilter]       = useState({ action_prefix: "", username: "", outcome: "", from_ts: "", to_ts: "", severity: "" });
   const [activityPage, setActivityPage]           = useState(0);
   const [metricsData, setMetricsData] = useState({ cpu: [], memory: [], storage: [], network: [], stats: null, collectedAt: null });
   const [metricsError, setMetricsError] = useState(false);
@@ -532,6 +532,7 @@ function PrivateNexusDashboard({ authUser }) {
   const [emergencyPending, setEmergencyPending] = useState(null);
   const [emergencyResult, setEmergencyResult] = useState(null);
   const [maintenanceReason, setMaintenanceReason] = useState("");
+  const [maintenanceDuration, setMaintenanceDuration] = useState("1h");
 
   // Admin panel — certs / disk / users / backup run
   const [certData, setCertData] = useState(null);
@@ -3761,6 +3762,21 @@ function PrivateNexusDashboard({ authUser }) {
     return `${Math.floor(sec / 86400)}d ago`;
   };
 
+  const severityOf = (ev) => {
+    const a = ev.action || "";
+    if (ev.outcome === "failure") return "warning";
+    if (a.startsWith("emergency.") || a === "emergency.maintenance.enable") return "critical";
+    if (a.startsWith("container.stop") || a.startsWith("container.restart")) return "warning";
+    if (a.startsWith("auth.")) return "info";
+    return "info";
+  };
+
+  const SEVERITY_STYLES = {
+    critical: "border-rose-400/40 bg-rose-500/10 text-rose-300",
+    warning:  "border-amber-400/40 bg-amber-500/10 text-amber-300",
+    info:     "border-sky-400/20 bg-sky-500/5 text-sky-400/70",
+  };
+
   const activityBoard = (
     <div className="space-y-4">
       {/* Header */}
@@ -3831,9 +3847,18 @@ function PrivateNexusDashboard({ authUser }) {
           value={activityFilter.to_ts}
           onChange={(e) => { setActivityFilter((f) => ({ ...f, to_ts: e.target.value })); setActivityPage(0); }}
           className="rounded-lg border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-400 focus:border-sky-400/50 focus:outline-none" />
-        {(activityFilter.action_prefix || activityFilter.username || activityFilter.outcome || activityFilter.from_ts || activityFilter.to_ts) && (
+        <select
+          value={activityFilter.severity}
+          onChange={(e) => { setActivityFilter((f) => ({ ...f, severity: e.target.value })); setActivityNewCount(0); }}
+          className="rounded-lg border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-200 focus:border-sky-400/50 focus:outline-none">
+          <option value="">All severities</option>
+          <option value="critical">Critical</option>
+          <option value="warning">Warning</option>
+          <option value="info">Info</option>
+        </select>
+        {(activityFilter.action_prefix || activityFilter.username || activityFilter.outcome || activityFilter.from_ts || activityFilter.to_ts || activityFilter.severity) && (
           <button
-            onClick={() => { setActivityFilter({ action_prefix: "", username: "", outcome: "", from_ts: "", to_ts: "" }); setActivityPage(0); setActivityNewCount(0); }}
+            onClick={() => { setActivityFilter({ action_prefix: "", username: "", outcome: "", from_ts: "", to_ts: "", severity: "" }); setActivityPage(0); setActivityNewCount(0); }}
             className="rounded-lg border border-neutral-700 px-2.5 py-1 text-xs text-neutral-400 hover:text-white">
             Clear
           </button>
@@ -3846,7 +3871,7 @@ function PrivateNexusDashboard({ authUser }) {
           <div className="px-4 py-8 text-center text-sm text-rose-400">{activityError}</div>
         ) : activityLoading ? (
           <div className="px-4 py-12 text-center text-sm text-neutral-500">Loading events…</div>
-        ) : activityEvents.length === 0 ? (
+        ) : activityEvents.filter((ev) => !activityFilter.severity || severityOf(ev) === activityFilter.severity).length === 0 ? (
           <div className="px-4 py-12 text-center text-sm text-neutral-500">No events match the current filters.</div>
         ) : (
           <div className="overflow-x-auto">
@@ -3854,6 +3879,7 @@ function PrivateNexusDashboard({ authUser }) {
               <thead>
                 <tr className="border-b border-neutral-800 text-left text-neutral-500">
                   <th className="px-4 py-2.5 font-medium">Time</th>
+                  <th className="px-3 py-2.5 font-medium">Sev</th>
                   <th className="px-3 py-2.5 font-medium">User</th>
                   <th className="px-3 py-2.5 font-medium">Action</th>
                   <th className="px-3 py-2.5 font-medium">Target</th>
@@ -3862,7 +3888,9 @@ function PrivateNexusDashboard({ authUser }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-800/50">
-                {activityEvents.map((ev) => (
+                {activityEvents.filter((ev) => !activityFilter.severity || severityOf(ev) === activityFilter.severity).map((ev) => {
+                  const sev = severityOf(ev);
+                  return (
                   <tr key={ev.id}
                     className={["transition-colors", ev.outcome === "failure" ? "bg-rose-500/5 hover:bg-rose-500/10" : "hover:bg-neutral-800/40"].join(" ")}>
                     <td className="px-4 py-2.5 whitespace-nowrap">
@@ -3870,6 +3898,11 @@ function PrivateNexusDashboard({ authUser }) {
                         {relTime(ev.ts)}
                       </span>
                       <div className="text-[10px] text-neutral-600">{new Date(ev.ts).toLocaleTimeString()}</div>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span className={["rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide", SEVERITY_STYLES[sev]].join(" ")}>
+                        {sev}
+                      </span>
                     </td>
                     <td className="px-3 py-2.5">
                       <div className="font-medium text-neutral-200">{ev.username}</div>
@@ -3893,7 +3926,8 @@ function PrivateNexusDashboard({ authUser }) {
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono text-neutral-600">{ev.ip || "—"}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -5283,6 +5317,14 @@ function PrivateNexusDashboard({ authUser }) {
                         <div className="mt-0.5 text-[11px] text-amber-300/60">
                           Since {emergencyStatus.maintenanceMode.since.slice(0, 19).replace("T", " ")} UTC
                         </div>
+                        {emergencyStatus.maintenanceMode.endsAt && (
+                          <div className="mt-0.5 text-[11px] text-amber-300/80">
+                            Expires {new Date(emergencyStatus.maintenanceMode.endsAt).toLocaleTimeString()} · {emergencyStatus.maintenanceMode.durationSecs >= 3600 ? `${emergencyStatus.maintenanceMode.durationSecs / 3600}h` : `${emergencyStatus.maintenanceMode.durationSecs / 60}m`}
+                          </div>
+                        )}
+                        {!emergencyStatus.maintenanceMode.endsAt && (
+                          <div className="mt-0.5 text-[11px] text-amber-300/60">No auto-expiry set</div>
+                        )}
                         {emergencyStatus.maintenanceMode.reason && (
                           <div className="mt-0.5 text-[11px] text-amber-300/60">{emergencyStatus.maintenanceMode.reason}</div>
                         )}
@@ -5301,19 +5343,30 @@ function PrivateNexusDashboard({ authUser }) {
                       <div className="rounded-lg border border-neutral-800 bg-neutral-800/50 px-3 py-2 text-xs text-neutral-500">
                         Inactive
                       </div>
-                      <input
-                        value={maintenanceReason}
-                        onChange={(e) => setMaintenanceReason(e.target.value)}
-                        placeholder="Reason (optional)"
-                        className="w-full rounded-lg border border-neutral-700 bg-neutral-800/60 px-3 py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 outline-none focus:border-amber-400/30"
-                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        <select
+                          value={maintenanceDuration}
+                          onChange={(e) => setMaintenanceDuration(e.target.value)}
+                          className="rounded-lg border border-neutral-700 bg-neutral-800/60 px-2 py-1.5 text-xs text-neutral-200 outline-none focus:border-amber-400/30">
+                          <option value="1h">1 hour</option>
+                          <option value="4h">4 hours</option>
+                          <option value="8h">8 hours</option>
+                          <option value="24h">24 hours</option>
+                        </select>
+                        <input
+                          value={maintenanceReason}
+                          onChange={(e) => setMaintenanceReason(e.target.value)}
+                          placeholder="Reason (optional)"
+                          className="rounded-lg border border-neutral-700 bg-neutral-800/60 px-2 py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 outline-none focus:border-amber-400/30"
+                        />
+                      </div>
                       <button
-                        onClick={() => runEmergencyAction("maintenance.enable", { reason: maintenanceReason || undefined })}
+                        onClick={() => runEmergencyAction("maintenance.enable", { duration: maintenanceDuration, reason: maintenanceReason || undefined })}
                         disabled={!!emergencyPending || !can("admin")}
                         title={!can("admin") ? "Requires admin role" : undefined}
                         className="w-full rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300 hover:bg-amber-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
-                        {emergencyPending === "maintenance.enable" ? "Enabling…" : "Enable Maintenance Mode"}
+                        {emergencyPending === "maintenance.enable" ? "Enabling…" : `Enable Maintenance (${maintenanceDuration})`}
                       </button>
                     </div>
                   )}

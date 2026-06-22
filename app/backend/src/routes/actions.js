@@ -12,6 +12,33 @@ const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 
 const MAINTENANCE_FILE = "/tmp/pn-maintenance.json";
 
+// Auto-expiry timer for maintenance mode
+let maintenanceTimer = null;
+function clearMaintenanceTimer() {
+  if (maintenanceTimer) { clearTimeout(maintenanceTimer); maintenanceTimer = null; }
+}
+function scheduleMaintenanceExpiry(endsAt) {
+  clearMaintenanceTimer();
+  const ms = new Date(endsAt).getTime() - Date.now();
+  if (ms <= 0) return;
+  maintenanceTimer = setTimeout(() => {
+    try { if (existsSync(MAINTENANCE_FILE)) rmSync(MAINTENANCE_FILE); } catch {}
+    console.log("[maintenance] auto-expired at", new Date().toISOString());
+  }, ms);
+}
+
+// On startup: re-arm timer if maintenance file exists with future endsAt
+try {
+  if (existsSync(MAINTENANCE_FILE)) {
+    const saved = JSON.parse(readFileSync(MAINTENANCE_FILE, "utf8"));
+    if (saved.endsAt && new Date(saved.endsAt) > new Date()) {
+      scheduleMaintenanceExpiry(saved.endsAt);
+    } else if (saved.endsAt) {
+      rmSync(MAINTENANCE_FILE); // expired while process was down
+    }
+  }
+} catch {}
+
 const ALLOWED_ACTIONS = new Set(["start", "stop", "restart"]);
 
 // Containers that may never be stopped or restarted via the actions API.
@@ -172,13 +199,27 @@ actionsRouter.post("/emergency", requireRole("admin"), async (req, res) => {
     }
 
     if (action === "maintenance.enable") {
-      const state = { enabled: true, since: new Date().toISOString(), reason: reason || null };
+      const VALID_DURATIONS = { "1h": 3600, "4h": 14400, "8h": 28800, "24h": 86400 };
+      const rawDuration = req.body.duration;
+      let durationSecs = null;
+      let endsAt = null;
+      if (rawDuration) {
+        durationSecs = VALID_DURATIONS[rawDuration] ?? (Number.isFinite(Number(rawDuration)) ? Math.min(Number(rawDuration), 86400) : null);
+        if (!durationSecs || durationSecs <= 0) {
+          return res.status(400).json({ ok: false, error: "Invalid duration — use 1h, 4h, 8h, 24h, or seconds (max 86400)" });
+        }
+        endsAt = new Date(Date.now() + durationSecs * 1000).toISOString();
+      }
+      const state = { enabled: true, since: new Date().toISOString(), reason: reason || null, durationSecs, endsAt };
       writeFileSync(MAINTENANCE_FILE, JSON.stringify(state));
-      recordAudit(req, "emergency.maintenance.enable", null, "success");
+      if (endsAt) scheduleMaintenanceExpiry(endsAt);
+      else clearMaintenanceTimer();
+      recordAudit(req, "emergency.maintenance.enable", null, "success", { durationSecs, endsAt });
       return res.json({ ok: true, action, maintenanceMode: state });
     }
 
     if (action === "maintenance.disable") {
+      clearMaintenanceTimer();
       if (existsSync(MAINTENANCE_FILE)) rmSync(MAINTENANCE_FILE);
       recordAudit(req, "emergency.maintenance.disable", null, "success");
       return res.json({ ok: true, action, maintenanceMode: null });
