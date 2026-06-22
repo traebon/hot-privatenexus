@@ -21,11 +21,13 @@ import { dnsRouter } from "./routes/dns.js";
 import { requireAuth }   from "./middleware/requireAuth.js";
 import { requireRole }   from "./middleware/requireRole.js";
 import { initDb }        from "./db.js";
+import { startHealthScheduler } from "./healthScheduler.js";
 
 const app  = express();
 const port = Number(process.env.PORT || 3001);
 
 await initDb();
+startHealthScheduler();
 
 // Redis session store
 const redisClient = createClient({ url: process.env.REDIS_URL || "redis://privatenexus-redis:6379" });
@@ -64,7 +66,7 @@ app.use(
 
 // Public routes — no auth required
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, service: "privatenexus-backend", version: "1.10.0" })
+  res.json({ ok: true, service: "privatenexus-backend", version: "1.11.0" })
 );
 app.use("/api/auth", authRouter);
 

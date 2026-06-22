@@ -2,6 +2,7 @@ import { Router } from "express";
 import { getPool, HOT_TENANT_ID } from "../db.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
+import { probeAllServices } from "../healthProbe.js";
 
 export const servicesRouter = Router();
 
@@ -136,19 +137,6 @@ servicesRouter.get("/workspaces", requireRole("viewer"), async (_req, res) => {
   }
 });
 
-// GET /api/services/workspaces — list workspaces for the modal dropdown
-servicesRouter.get("/workspaces", requireRole("viewer"), async (_req, res) => {
-  try {
-    const { rows } = await getPool().query(
-      "SELECT id, name, slug FROM workspaces WHERE tenant_id = $1 ORDER BY name",
-      [HOT_TENANT_ID]
-    );
-    res.json({ ok: true, workspaces: rows });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
 // PATCH /api/services/:id — admin+ (status or archived)
 servicesRouter.patch("/:id", requireRole("admin"), async (req, res) => {
   const allowed = {};
@@ -181,58 +169,29 @@ servicesRouter.patch("/:id", requireRole("admin"), async (req, res) => {
   }
 });
 
-// GET /api/services/health — probe all services with a health_endpoint
-// Maps HTTP status → service status, writes results to DB, returns probe array
+// GET /api/services/health — probe all services, write health_events, return results
 servicesRouter.get("/health", requireRole("operator"), async (_req, res) => {
   try {
-    const { rows: services } = await getPool().query(
-      `SELECT id, slug, health_endpoint FROM services
-       WHERE tenant_id = $1 AND health_endpoint IS NOT NULL AND archived = FALSE`,
-      [HOT_TENANT_ID]
-    );
-
-    if (!services.length) return res.json({ ok: true, results: [], ts: new Date().toISOString() });
-
-    const probe = async (svc) => {
-      const start = Date.now();
-      try {
-        const r = await fetch(svc.health_endpoint, {
-          method: "GET",
-          signal: AbortSignal.timeout(5000),
-          headers: { "User-Agent": "PrivateNexus-HealthCheck/1.0" },
-        });
-        const latencyMs  = Date.now() - start;
-        const statusCode = r.status;
-        const status = statusCode < 300 ? "healthy"
-                     : statusCode < 500 ? "warning"
-                     : "degraded";
-        return { id: svc.id, slug: svc.slug, status, statusCode, latencyMs, error: null };
-      } catch (err) {
-        return {
-          id: svc.id, slug: svc.slug,
-          status: "down",
-          statusCode: null,
-          latencyMs: Date.now() - start,
-          error: err.name === "TimeoutError" ? "timeout" : err.message,
-        };
-      }
-    };
-
-    const results = await Promise.all(services.map(probe));
-
-    // Write results back to DB in bulk
-    const pool = getPool();
-    await Promise.all(
-      results.map((r) =>
-        pool.query(
-          `UPDATE services SET status = $1, updated_at = NOW()
-           WHERE id = $2 AND tenant_id = $3`,
-          [r.status, r.id, HOT_TENANT_ID]
-        )
-      )
-    );
-
+    const results = await probeAllServices("manual");
     res.json({ ok: true, results, ts: new Date().toISOString() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/services/:id/health-history?limit=50 — health event history for a service
+servicesRouter.get("/:id/health-history", requireRole("viewer"), async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  try {
+    const { rows } = await getPool().query(
+      `SELECT id, ts, status, status_code, latency_ms, error, source
+       FROM health_events
+       WHERE service_id = $1 AND tenant_id = $2
+       ORDER BY ts DESC
+       LIMIT $3`,
+      [req.params.id, HOT_TENANT_ID, limit]
+    );
+    res.json({ ok: true, events: rows });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

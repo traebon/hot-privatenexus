@@ -120,5 +120,23 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS services_workspace_idx ON services (workspace_id);
   `);
 
+  // Health event history
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS health_events (
+      id          BIGSERIAL    PRIMARY KEY,
+      ts          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+      tenant_id   UUID         NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      service_id  UUID         NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+      slug        TEXT         NOT NULL,
+      status      TEXT         NOT NULL,
+      status_code INTEGER,
+      latency_ms  INTEGER,
+      error       TEXT,
+      source      TEXT         NOT NULL DEFAULT 'scheduler'
+    );
+    CREATE INDEX IF NOT EXISTS health_events_service_ts_idx ON health_events (service_id, ts DESC);
+    CREATE INDEX IF NOT EXISTS health_events_tenant_ts_idx  ON health_events (tenant_id, ts DESC);
+  `);
+
   console.log("DB connected and schema ready");
 }
