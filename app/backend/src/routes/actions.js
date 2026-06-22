@@ -28,6 +28,10 @@ const CONTAINER_ALLOWLIST = new Set([
   "privatenexus-backend",
 ]);
 
+// Per-container cooldown: prevents rapid-fire actions (e.g. accidental double-click restart)
+const COOLDOWN_MS = 60_000;
+const actionCooldowns = new Map(); // containerId → lastActionTs (ms)
+
 // POST /api/actions/run — { action, containerId } (also accepts target for compat)
 // action: "start" | "stop" | "restart"
 // containerId: container id or name
@@ -51,6 +55,19 @@ actionsRouter.post("/run", async (req, res) => {
     recordAudit(req, `container.${action}.blocked`, id, "failure", { reason: "not in allowlist" });
     return res.status(403).json({ ok: false, error: `Container '${id}' is not in the approved action allowlist` });
   }
+
+  const lastTs = actionCooldowns.get(id) || 0;
+  const elapsed = Date.now() - lastTs;
+  if (elapsed < COOLDOWN_MS) {
+    const retryAfterMs = COOLDOWN_MS - elapsed;
+    recordAudit(req, `container.${action}.cooldown`, id, "failure", { retryAfterMs });
+    return res.status(429).json({
+      ok: false,
+      error: `Action cooldown active — wait ${Math.ceil(retryAfterMs / 1000)}s before retrying`,
+      retryAfterMs,
+    });
+  }
+  actionCooldowns.set(id, Date.now());
 
   try {
     const container = docker.getContainer(id);

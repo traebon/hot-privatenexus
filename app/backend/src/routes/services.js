@@ -197,6 +197,123 @@ servicesRouter.get("/:id/health-history", requireRole("viewer"), async (req, res
   }
 });
 
+// ── Service backup records ────────────────────────────────────────────────────
+
+const VALID_BACKUP_TYPES  = ["vm_snapshot", "data_export", "config", "full", "incremental", "manual"];
+const VALID_TRUST_STATES  = ["lkg", "trusted", "untrusted", "unknown"];
+
+function computeRecoveryScore(backups) {
+  if (!backups.length) {
+    return { score: 0, grade: "F", color: "rose", reasons: ["No backup records registered"], backupCount: 0, latestAt: null };
+  }
+  const sorted = [...backups].sort((a, b) => new Date(b.taken_at) - new Date(a.taken_at));
+  const latest = sorted[0];
+  const hasLkg     = backups.some((b) => b.trust_state === "lkg");
+  const hasTrusted = backups.some((b) => ["lkg", "trusted"].includes(b.trust_state));
+  const ageDays    = (Date.now() - new Date(latest.taken_at).getTime()) / 86_400_000;
+
+  let score = 100;
+  const reasons = [];
+
+  if (!hasLkg)     { score -= 30; reasons.push("No LKG backup designated"); }
+  if (!hasTrusted) { score -= 20; reasons.push("No trusted backup available"); }
+
+  if      (ageDays > 30) { score -= 40; reasons.push(`Latest backup is ${Math.floor(ageDays)} days old`); }
+  else if (ageDays > 7)  { score -= 25; reasons.push(`Latest backup is ${Math.floor(ageDays)} days old`); }
+  else if (ageDays > 3)  { score -= 10; reasons.push(`Latest backup is ${Math.floor(ageDays)} days old`); }
+  else if (ageDays > 1)  { score -= 5;  reasons.push(`Latest backup is ${Math.ceil(ageDays)} day old`); }
+
+  score = Math.max(0, score);
+  const grade = score >= 80 ? "A" : score >= 60 ? "B" : score >= 40 ? "C" : score >= 20 ? "D" : "F";
+  const color = score >= 80 ? "emerald" : score >= 60 ? "yellow" : score >= 40 ? "amber" : "rose";
+  return { score, grade, color, reasons, backupCount: backups.length, latestAt: latest.taken_at };
+}
+
+// GET /api/services/:id/backups — list backup records + recovery score
+servicesRouter.get("/:id/backups", requireRole("viewer"), async (req, res) => {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT id, label, backup_type, trust_state, location, taken_at, size_bytes, notes, created_at
+       FROM service_backups
+       WHERE service_id = $1 AND tenant_id = $2
+       ORDER BY taken_at DESC`,
+      [req.params.id, HOT_TENANT_ID]
+    );
+    res.json({ ok: true, backups: rows, score: computeRecoveryScore(rows) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/services/:id/backups — register a backup record (operator+)
+servicesRouter.post("/:id/backups", requireRole("operator"), async (req, res) => {
+  const { label, backup_type, trust_state, location, taken_at, size_bytes, notes } = req.body || {};
+  if (!label?.trim()) return res.status(400).json({ ok: false, error: "label is required" });
+  if (backup_type && !VALID_BACKUP_TYPES.includes(backup_type))
+    return res.status(400).json({ ok: false, error: `invalid backup_type — must be one of: ${VALID_BACKUP_TYPES.join(", ")}` });
+  if (trust_state && !VALID_TRUST_STATES.includes(trust_state))
+    return res.status(400).json({ ok: false, error: `invalid trust_state — must be one of: ${VALID_TRUST_STATES.join(", ")}` });
+
+  try {
+    const { rows } = await getPool().query(
+      `INSERT INTO service_backups
+         (tenant_id, service_id, label, backup_type, trust_state, location, taken_at, size_bytes, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [HOT_TENANT_ID, req.params.id, label.trim(),
+       backup_type || "manual", trust_state || "unknown",
+       location || null, taken_at ? new Date(taken_at) : new Date(),
+       size_bytes ? Number(size_bytes) : null, notes || null]
+    );
+    recordAudit(req, "service_backup.create", req.params.id, "success", { label: rows[0].label });
+    res.status(201).json({ ok: true, backup: rows[0] });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// PATCH /api/services/:id/backups/:backupId — update trust_state or notes (operator+)
+servicesRouter.patch("/:id/backups/:backupId", requireRole("operator"), async (req, res) => {
+  const { trust_state, notes, label } = req.body || {};
+  if (trust_state && !VALID_TRUST_STATES.includes(trust_state))
+    return res.status(400).json({ ok: false, error: "invalid trust_state" });
+
+  const sets = [];
+  const vals = [];
+  if (trust_state !== undefined) { vals.push(trust_state); sets.push(`trust_state = $${vals.length}`); }
+  if (notes      !== undefined) { vals.push(notes);       sets.push(`notes = $${vals.length}`); }
+  if (label      !== undefined) { vals.push(label?.trim()); sets.push(`label = $${vals.length}`); }
+  if (!sets.length) return res.status(400).json({ ok: false, error: "Nothing to update" });
+
+  vals.push(req.params.backupId, HOT_TENANT_ID);
+  try {
+    const { rows } = await getPool().query(
+      `UPDATE service_backups SET ${sets.join(", ")} WHERE id = $${vals.length - 1} AND tenant_id = $${vals.length} RETURNING *`,
+      vals
+    );
+    if (!rows.length) return res.status(404).json({ ok: false, error: "Not found" });
+    recordAudit(req, "service_backup.update", req.params.id, "success", { backupId: rows[0].id });
+    res.json({ ok: true, backup: rows[0] });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// DELETE /api/services/:id/backups/:backupId — remove a backup record (admin+)
+servicesRouter.delete("/:id/backups/:backupId", requireRole("admin"), async (req, res) => {
+  try {
+    const { rowCount } = await getPool().query(
+      "DELETE FROM service_backups WHERE id = $1 AND tenant_id = $2",
+      [req.params.backupId, HOT_TENANT_ID]
+    );
+    if (!rowCount) return res.status(404).json({ ok: false, error: "Not found" });
+    recordAudit(req, "service_backup.delete", req.params.id, "success", { backupId: req.params.backupId });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // POST /api/services/workspaces — create a workspace (admin+)
 servicesRouter.post("/workspaces", requireRole("admin"), async (req, res) => {
   const { name, slug } = req.body;

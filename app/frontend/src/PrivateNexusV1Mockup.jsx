@@ -519,6 +519,14 @@ function PrivateNexusDashboard({ authUser }) {
   const [serviceActionPending, setServiceActionPending] = useState(null);
   const [serviceActionError, setServiceActionError] = useState(null);
   const [serviceActionConfirm, setServiceActionConfirm] = useState(null);
+  // Service backup records + recovery score
+  const [serviceBackups, setServiceBackups] = useState([]);
+  const [serviceBackupsLoading, setServiceBackupsLoading] = useState(false);
+  const [recoveryScore, setRecoveryScore] = useState(null);
+  const [showAddBackupModal, setShowAddBackupModal] = useState(false);
+  const [addBackupForm, setAddBackupForm] = useState({ label: "", backup_type: "manual", trust_state: "unknown", location: "", taken_at: "", notes: "" });
+  const [addBackupSaving, setAddBackupSaving] = useState(false);
+  const [addBackupError, setAddBackupError] = useState(null);
   // DNS state
   const [dnsZones, setDnsZones] = useState([]);
   const [dnsSelectedZone, setDnsSelectedZone] = useState(null);
@@ -2730,15 +2738,30 @@ function PrivateNexusDashboard({ authUser }) {
     }
   }
 
+  function loadServiceBackups(serviceId) {
+    setServiceBackupsLoading(true);
+    fetch(`${API_BASE}/api/services/${serviceId}/backups`)
+      .then((r) => r.json())
+      .then((d) => {
+        setServiceBackups(d.backups || []);
+        setRecoveryScore(d.score || null);
+        setServiceBackupsLoading(false);
+      })
+      .catch(() => setServiceBackupsLoading(false));
+  }
+
   function openServiceDetail(svc) {
     setSelectedService(svc);
     setServiceHealthHistory([]);
     setServiceActionError(null);
     setServiceHistoryLoading(true);
+    setServiceBackups([]);
+    setRecoveryScore(null);
     fetch(`${API_BASE}/api/services/${svc.id}/health-history?limit=40`)
       .then((r) => r.json())
       .then((d) => { setServiceHealthHistory(d.events || []); setServiceHistoryLoading(false); })
       .catch(() => setServiceHistoryLoading(false));
+    loadServiceBackups(svc.id);
   }
 
   function closeServiceDetail() {
@@ -2746,6 +2769,48 @@ function PrivateNexusDashboard({ authUser }) {
     setServiceHealthHistory([]);
     setServiceActionError(null);
     setServiceActionConfirm(null);
+    setServiceBackups([]);
+    setRecoveryScore(null);
+    setShowAddBackupModal(false);
+    setAddBackupError(null);
+  }
+
+  async function addServiceBackup() {
+    if (!selectedService || !addBackupForm.label.trim()) return;
+    setAddBackupSaving(true);
+    setAddBackupError(null);
+    try {
+      const body = { ...addBackupForm };
+      if (!body.taken_at) delete body.taken_at;
+      if (!body.location) delete body.location;
+      if (!body.notes) delete body.notes;
+      const r = await fetch(`${API_BASE}/api/services/${selectedService.id}/backups`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (!r.ok) { setAddBackupError(d.error || "Failed to save backup record"); return; }
+      setShowAddBackupModal(false);
+      setAddBackupForm({ label: "", backup_type: "manual", trust_state: "unknown", location: "", taken_at: "", notes: "" });
+      loadServiceBackups(selectedService.id);
+    } catch (err) {
+      setAddBackupError(err.message);
+    } finally {
+      setAddBackupSaving(false);
+    }
+  }
+
+  async function updateBackupTrust(backupId, trust_state) {
+    if (!selectedService) return;
+    await fetch(`${API_BASE}/api/services/${selectedService.id}/backups/${backupId}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trust_state }),
+    });
+    loadServiceBackups(selectedService.id);
+  }
+
+  async function deleteServiceBackup(backupId) {
+    if (!selectedService) return;
+    await fetch(`${API_BASE}/api/services/${selectedService.id}/backups/${backupId}`, { method: "DELETE" });
+    loadServiceBackups(selectedService.id);
   }
 
   async function executeServiceAction(action) {
@@ -2969,19 +3034,187 @@ function PrivateNexusDashboard({ authUser }) {
 
         {/* Recovery score */}
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
-          <div className="mb-2 flex items-center justify-between">
+          <div className="mb-3 flex items-center justify-between">
             <div className="text-sm font-semibold text-neutral-200">Recovery Score</div>
-            <span className="rounded-full bg-neutral-800 px-2.5 py-0.5 text-[10px] text-neutral-500">Not calculated</span>
+            {recoveryScore && (
+              <span className={["rounded-full px-2.5 py-0.5 text-[10px] font-bold border",
+                recoveryScore.color === "emerald" ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-300" :
+                recoveryScore.color === "yellow"  ? "border-yellow-400/30 bg-yellow-500/10 text-yellow-300" :
+                recoveryScore.color === "amber"   ? "border-amber-400/30 bg-amber-500/10 text-amber-300" :
+                "border-rose-400/30 bg-rose-500/10 text-rose-300"].join(" ")}>
+                {recoveryScore.score}/100 · {recoveryScore.grade}
+              </span>
+            )}
           </div>
-          <div className="flex items-center gap-4 text-xs text-neutral-500">
-            <div>Backup policy: <span className={["font-medium", selectedService.backup_policy === "none" ? "text-amber-400" : "text-emerald-400"].join(" ")}>{selectedService.backup_policy}</span></div>
-            <div>Runtime: <span className="font-medium text-neutral-300">{selectedService.runtime_type}</span></div>
+          {serviceBackupsLoading ? (
+            <div className="text-xs text-neutral-500">Loading backup records…</div>
+          ) : recoveryScore ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-4 text-xs text-neutral-500">
+                <div>Policy: <span className={["font-medium", selectedService.backup_policy === "none" ? "text-amber-400" : "text-emerald-400"].join(" ")}>{selectedService.backup_policy}</span></div>
+                <div>Records: <span className="font-medium text-neutral-300">{recoveryScore.backupCount}</span></div>
+                {recoveryScore.latestAt && <div>Latest: <span className="font-medium text-neutral-300">{new Date(recoveryScore.latestAt).toLocaleDateString()}</span></div>}
+              </div>
+              {recoveryScore.reasons.length > 0 && (
+                <div className="space-y-1">
+                  {recoveryScore.reasons.map((r, i) => (
+                    <div key={i} className="flex items-center gap-1.5 text-xs text-amber-400/80">
+                      <span className="shrink-0">⚠</span><span>{r}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {recoveryScore.reasons.length === 0 && (
+                <div className="flex items-center gap-1.5 text-xs text-emerald-400/80"><span>✓</span><span>All recovery criteria met</span></div>
+              )}
+            </div>
+          ) : (
+            <div className="text-xs text-neutral-500">Loading…</div>
+          )}
+        </div>
+
+        {/* Backup inventory */}
+        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-sm font-semibold text-neutral-200">Backup Records</div>
+            {userRole >= 1 && (
+              <button onClick={() => { setAddBackupForm({ label: "", backup_type: "manual", trust_state: "unknown", location: "", taken_at: "", notes: "" }); setAddBackupError(null); setShowAddBackupModal(true); }}
+                className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20 transition-colors">
+                + Add Record
+              </button>
+            )}
           </div>
-          <div className="mt-2 rounded-lg bg-neutral-800/60 px-3 py-2 text-xs text-neutral-500">
-            Recovery score requires backup records. Sandbox restore testing is planned for v2.0.
-          </div>
+          {serviceBackupsLoading ? (
+            <div className="text-xs text-neutral-500">Loading…</div>
+          ) : serviceBackups.length === 0 ? (
+            <div className="rounded-lg bg-neutral-800/60 px-3 py-3 text-center text-xs text-neutral-500">
+              No backup records registered for this service.{userRole >= 1 ? " Use + Add Record to register one." : ""}
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-neutral-800 text-left text-neutral-500">
+                    <th className="pb-2 pr-3 font-medium">Label</th>
+                    <th className="pb-2 pr-3 font-medium">Type</th>
+                    <th className="pb-2 pr-3 font-medium">Trust</th>
+                    <th className="pb-2 pr-3 font-medium">Taken</th>
+                    <th className="pb-2 font-medium">Location</th>
+                    {userRole >= 1 && <th className="pb-2 text-right font-medium">Actions</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-800/50">
+                  {serviceBackups.map((bk) => (
+                    <tr key={bk.id} className="group">
+                      <td className="py-2 pr-3 font-medium text-neutral-200">{bk.label}</td>
+                      <td className="py-2 pr-3 text-neutral-400 font-mono">{bk.backup_type}</td>
+                      <td className="py-2 pr-3">
+                        <span className={["rounded-full px-1.5 py-0.5 text-[10px] border",
+                          bk.trust_state === "lkg"      ? "border-emerald-400/30 text-emerald-300 bg-emerald-500/10" :
+                          bk.trust_state === "trusted"  ? "border-cyan-400/30 text-cyan-300 bg-cyan-500/10" :
+                          bk.trust_state === "untrusted"? "border-rose-400/30 text-rose-300 bg-rose-500/10" :
+                          "border-neutral-600 text-neutral-400 bg-neutral-800"].join(" ")}>
+                          {bk.trust_state}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-3 text-neutral-400">{new Date(bk.taken_at).toLocaleDateString()}</td>
+                      <td className="py-2 text-neutral-500 truncate max-w-[120px]" title={bk.location || ""}>{bk.location || "—"}</td>
+                      {userRole >= 1 && (
+                        <td className="py-2 text-right">
+                          <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {bk.trust_state !== "lkg" && (
+                              <button onClick={() => updateBackupTrust(bk.id, "lkg")}
+                                title="Mark as Last Known Good"
+                                className="rounded px-1.5 py-0.5 text-[10px] border border-emerald-400/30 text-emerald-400 hover:bg-emerald-500/10">
+                                LKG
+                              </button>
+                            )}
+                            {bk.trust_state !== "trusted" && bk.trust_state !== "lkg" && (
+                              <button onClick={() => updateBackupTrust(bk.id, "trusted")}
+                                title="Mark as trusted"
+                                className="rounded px-1.5 py-0.5 text-[10px] border border-cyan-400/30 text-cyan-400 hover:bg-cyan-500/10">
+                                Trust
+                              </button>
+                            )}
+                            {userRole >= 2 && (
+                              <button onClick={() => { if (confirm(`Delete backup record "${bk.label}"?`)) deleteServiceBackup(bk.id); }}
+                                className="rounded px-1.5 py-0.5 text-[10px] border border-rose-400/30 text-rose-400 hover:bg-rose-500/10">
+                                Del
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Add backup record modal */}
+      {showAddBackupModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="flex max-h-[90vh] w-full max-w-md flex-col rounded-2xl border border-emerald-400/20 bg-neutral-950 shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-neutral-800 px-6 py-4">
+              <div className="text-base font-semibold">Add Backup Record</div>
+              <button onClick={() => setShowAddBackupModal(false)} className="text-neutral-500 hover:text-white text-lg">✕</button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3 text-sm">
+              <div>
+                <label className="mb-1 block text-xs text-neutral-400">Label <span className="text-rose-400">*</span></label>
+                <input value={addBackupForm.label} onChange={(e) => setAddBackupForm((f) => ({ ...f, label: e.target.value }))}
+                  placeholder="e.g. pre-migration-2026-06-22"
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-xs text-neutral-400">Type</label>
+                  <select value={addBackupForm.backup_type} onChange={(e) => setAddBackupForm((f) => ({ ...f, backup_type: e.target.value }))}
+                    className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none">
+                    {["vm_snapshot","data_export","config","full","incremental","manual"].map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-neutral-400">Trust state</label>
+                  <select value={addBackupForm.trust_state} onChange={(e) => setAddBackupForm((f) => ({ ...f, trust_state: e.target.value }))}
+                    className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none">
+                    {["unknown","trusted","lkg","untrusted"].map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-neutral-400">Taken at <span className="text-neutral-600">(leave blank for now)</span></label>
+                <input type="datetime-local" value={addBackupForm.taken_at} onChange={(e) => setAddBackupForm((f) => ({ ...f, taken_at: e.target.value }))}
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-neutral-400">Location <span className="text-neutral-600">(optional)</span></label>
+                <input value={addBackupForm.location} onChange={(e) => setAddBackupForm((f) => ({ ...f, location: e.target.value }))}
+                  placeholder="e.g. Backblaze B2 / QNAP NAS / local /backup/"
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-neutral-400">Notes <span className="text-neutral-600">(optional)</span></label>
+                <textarea value={addBackupForm.notes} onChange={(e) => setAddBackupForm((f) => ({ ...f, notes: e.target.value }))}
+                  rows={2} placeholder="e.g. Taken before ERPNext v17 upgrade"
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none resize-none" />
+              </div>
+              {addBackupError && <div className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{addBackupError}</div>}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-neutral-800 px-6 py-4">
+              <button onClick={() => setShowAddBackupModal(false)}
+                className="rounded-lg border border-neutral-700 px-4 py-2 text-xs text-neutral-400 hover:text-white">Cancel</button>
+              <button onClick={addServiceBackup} disabled={addBackupSaving || !addBackupForm.label.trim()}
+                className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-xs text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50">
+                {addBackupSaving ? "Saving…" : "Save Record"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 

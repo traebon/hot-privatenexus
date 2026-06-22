@@ -138,5 +138,24 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS health_events_tenant_ts_idx  ON health_events (tenant_id, ts DESC);
   `);
 
+  // Service-level backup records (separate from file-centric backups in fileBackups.js)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS service_backups (
+      id           UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id    UUID         NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      service_id   UUID         NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+      label        TEXT         NOT NULL,
+      backup_type  TEXT         NOT NULL DEFAULT 'manual',
+      trust_state  TEXT         NOT NULL DEFAULT 'unknown',
+      location     TEXT,
+      taken_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+      size_bytes   BIGINT,
+      notes        TEXT,
+      created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS service_backups_service_idx ON service_backups (service_id, taken_at DESC);
+    CREATE INDEX IF NOT EXISTS service_backups_tenant_idx  ON service_backups (tenant_id);
+  `);
+
   console.log("DB connected and schema ready");
 }
