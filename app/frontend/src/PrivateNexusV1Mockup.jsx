@@ -453,6 +453,16 @@ function PrivateNexusDashboard({ authUser }) {
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState(null);
   const [auditFilter, setAuditFilter] = useState({ action: "", outcome: "" });
+  // Activity feed
+  const [activityEvents, setActivityEvents]       = useState([]);
+  const [activityLoading, setActivityLoading]     = useState(false);
+  const [activityError, setActivityError]         = useState(null);
+  const [activityTotal, setActivityTotal]         = useState(null);
+  const [activityMaxId, setActivityMaxId]         = useState("0");
+  const [activityNewCount, setActivityNewCount]   = useState(0);
+  const [activityPolling, setActivityPolling]     = useState(true);
+  const [activityFilter, setActivityFilter]       = useState({ action_prefix: "", username: "", outcome: "", from_ts: "", to_ts: "" });
+  const [activityPage, setActivityPage]           = useState(0);
   const [metricsData, setMetricsData] = useState({ cpu: [], memory: [], storage: [], network: [], stats: null, collectedAt: null });
   const [metricsError, setMetricsError] = useState(false);
   const [opsVMs, setOpsVMs] = useState([]);
@@ -783,6 +793,53 @@ function PrivateNexusDashboard({ authUser }) {
     const id = setInterval(runLogsQuery, 15000);
     return () => clearInterval(id);
   }, [logsAutoRefresh, logsSource, logsSourceType, logsRange, logsLevel, logsSearch]);
+
+  // Activity feed — initial load when board becomes active or filters change
+  useEffect(() => {
+    if (activeBoard !== "Activity") return;
+    setActivityLoading(true);
+    setActivityError(null);
+    setActivityNewCount(0);
+    const params = new URLSearchParams({ limit: "50", offset: String(activityPage * 50) });
+    if (activityFilter.action_prefix) params.set("action_prefix", activityFilter.action_prefix);
+    if (activityFilter.username)      params.set("username",      activityFilter.username);
+    if (activityFilter.outcome)       params.set("outcome",       activityFilter.outcome);
+    if (activityFilter.from_ts)       params.set("from_ts",       activityFilter.from_ts);
+    if (activityFilter.to_ts)         params.set("to_ts",         activityFilter.to_ts);
+    fetch(`${API_BASE}/api/activity?${params}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d.ok) throw new Error(d.error || "Failed");
+        setActivityEvents(d.events || []);
+        setActivityTotal(d.total);
+        setActivityMaxId(d.maxId || "0");
+        setActivityLoading(false);
+      })
+      .catch((e) => { setActivityError(e.message); setActivityLoading(false); });
+  }, [activeBoard, activityFilter, activityPage, API_BASE]);
+
+  // Activity feed — live polling for new events (since_id cursor)
+  useEffect(() => {
+    if (activeBoard !== "Activity" || !activityPolling) return;
+    const poll = () => {
+      if (!activityMaxId || activityMaxId === "0") return;
+      const params = new URLSearchParams({ since_id: activityMaxId, limit: "50" });
+      if (activityFilter.action_prefix) params.set("action_prefix", activityFilter.action_prefix);
+      if (activityFilter.username)      params.set("username",      activityFilter.username);
+      if (activityFilter.outcome)       params.set("outcome",       activityFilter.outcome);
+      fetch(`${API_BASE}/api/activity?${params}`)
+        .then((r) => r.json())
+        .then((d) => {
+          if (!d.ok || !d.events.length) return;
+          setActivityEvents((prev) => [...d.events.reverse(), ...prev]);
+          setActivityMaxId(d.maxId);
+          setActivityNewCount((n) => n + d.events.length);
+        })
+        .catch(() => {});
+    };
+    const id = setInterval(poll, 10_000);
+    return () => clearInterval(id);
+  }, [activeBoard, activityPolling, activityMaxId, activityFilter, API_BASE]);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/files`)
@@ -1504,7 +1561,7 @@ function PrivateNexusDashboard({ authUser }) {
         level: a.level === "critical" ? "critical" : a.level === "warning" ? "warning" : "info",
       }));
 
-  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "DNS", "Catalogue", "Inventory", "Alerts", "Logs", "Emergency"];
+  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "DNS", "Catalogue", "Inventory", "Alerts", "Logs", "Activity", "Emergency"];
 
   const boardThemes = {
     Home:      { active: "from-cyan-400 to-blue-500",     ring: "border-cyan-400/30",     hover: "hover:border-cyan-400/30",     shell: "from-cyan-500/10 to-blue-500/5" },
@@ -1517,6 +1574,7 @@ function PrivateNexusDashboard({ authUser }) {
     Logs:      { active: "from-cyan-400 to-blue-500",      ring: "border-cyan-400/30",     hover: "hover:border-cyan-400/30",     shell: "from-cyan-500/10 to-blue-500/5" },
     DNS:       { active: "from-emerald-400 to-teal-500",   ring: "border-emerald-400/30",  hover: "hover:border-emerald-400/30",  shell: "from-emerald-500/10 to-teal-500/5" },
     Catalogue: { active: "from-violet-400 to-purple-500",  ring: "border-violet-400/30",   hover: "hover:border-violet-400/30",   shell: "from-violet-500/10 to-purple-500/5" },
+    Activity:  { active: "from-sky-400 to-indigo-500",    ring: "border-sky-400/30",      hover: "hover:border-sky-400/30",      shell: "from-sky-500/10 to-indigo-500/5" },
     Emergency: { active: "from-rose-400 to-pink-500",     ring: "border-rose-400/30",     hover: "hover:border-rose-400/30",     shell: "from-rose-500/10 to-pink-500/5" },
   };
 
@@ -3660,6 +3718,212 @@ function PrivateNexusDashboard({ authUser }) {
     </div>
   );
 
+  // ── Activity feed helpers ─────────────────────────────────────────────────
+  const ACTION_CATEGORIES = [
+    { value: "",             label: "All actions" },
+    { value: "container",   label: "Container" },
+    { value: "service",     label: "Service" },
+    { value: "service_backup", label: "Backup record" },
+    { value: "emergency",   label: "Emergency" },
+    { value: "backup",      label: "Backup" },
+    { value: "diagnostics", label: "Diagnostics" },
+    { value: "dns",         label: "DNS" },
+    { value: "files",       label: "Files" },
+    { value: "auth",        label: "Auth" },
+  ];
+
+  const actionColor = (action = "") => {
+    if (action.startsWith("container."))     return "text-amber-300";
+    if (action.startsWith("service_backup."))return "text-cyan-300";
+    if (action.startsWith("service."))       return "text-teal-300";
+    if (action.startsWith("emergency."))     return "text-rose-300";
+    if (action.startsWith("backup."))        return "text-violet-300";
+    if (action.startsWith("diagnostics."))   return "text-sky-300";
+    if (action.startsWith("dns."))           return "text-emerald-300";
+    if (action.startsWith("files."))         return "text-pink-300";
+    if (action.startsWith("auth."))          return "text-blue-300";
+    return "text-neutral-300";
+  };
+
+  const roleColor = (role = "") => {
+    if (role === "breakglass") return "border-rose-400/50 text-rose-300 bg-rose-500/10";
+    if (role === "superadmin") return "border-purple-400/50 text-purple-300 bg-purple-500/10";
+    if (role === "admin")      return "border-indigo-400/50 text-indigo-300 bg-indigo-500/10";
+    if (role === "operator")   return "border-amber-400/50 text-amber-300 bg-amber-500/10";
+    return "border-neutral-600 text-neutral-400 bg-neutral-800";
+  };
+
+  const relTime = (ts) => {
+    const sec = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+    if (sec < 60)   return `${sec}s ago`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+    if (sec < 86400)return `${Math.floor(sec / 3600)}h ago`;
+    return `${Math.floor(sec / 86400)}d ago`;
+  };
+
+  const activityBoard = (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="rounded-2xl border border-sky-400/20 bg-gradient-to-r from-sky-500/10 via-indigo-500/10 to-blue-500/10 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <div className="text-xs uppercase tracking-wider text-sky-300/80">Audit Trail</div>
+              {activityPolling && (
+                <span className="flex items-center gap-1 text-[10px] text-emerald-400/80">
+                  <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+                  Live
+                </span>
+              )}
+            </div>
+            <div className="text-lg font-semibold">Activity Feed</div>
+          </div>
+          <div className="flex items-center gap-2">
+            {activityNewCount > 0 && (
+              <span className="rounded-full border border-sky-400/30 bg-sky-500/10 px-2.5 py-0.5 text-xs text-sky-300">
+                +{activityNewCount} new
+              </span>
+            )}
+            {activityTotal !== null && (
+              <span className="rounded-full bg-neutral-800 px-2.5 py-0.5 text-xs text-neutral-400">
+                {activityTotal.toLocaleString()} total
+              </span>
+            )}
+            <button
+              onClick={() => setActivityPolling((p) => !p)}
+              className={["rounded-lg border px-3 py-1 text-xs transition-colors",
+                activityPolling
+                  ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                  : "border-neutral-700 bg-neutral-800 text-neutral-400 hover:text-white"].join(" ")}>
+              {activityPolling ? "Pause" : "Resume"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-neutral-800 bg-neutral-900/70 px-4 py-3">
+        <select
+          value={activityFilter.action_prefix}
+          onChange={(e) => { setActivityFilter((f) => ({ ...f, action_prefix: e.target.value })); setActivityPage(0); setActivityNewCount(0); }}
+          className="rounded-lg border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-200 focus:border-sky-400/50 focus:outline-none">
+          {ACTION_CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+        </select>
+        <input
+          value={activityFilter.username}
+          onChange={(e) => { setActivityFilter((f) => ({ ...f, username: e.target.value })); setActivityPage(0); setActivityNewCount(0); }}
+          placeholder="Username…"
+          className="rounded-lg border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-200 focus:border-sky-400/50 focus:outline-none w-32" />
+        <select
+          value={activityFilter.outcome}
+          onChange={(e) => { setActivityFilter((f) => ({ ...f, outcome: e.target.value })); setActivityPage(0); setActivityNewCount(0); }}
+          className="rounded-lg border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-200 focus:border-sky-400/50 focus:outline-none">
+          <option value="">All outcomes</option>
+          <option value="success">Success</option>
+          <option value="failure">Failure</option>
+        </select>
+        <input type="datetime-local"
+          value={activityFilter.from_ts}
+          onChange={(e) => { setActivityFilter((f) => ({ ...f, from_ts: e.target.value })); setActivityPage(0); }}
+          className="rounded-lg border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-400 focus:border-sky-400/50 focus:outline-none" />
+        <span className="text-xs text-neutral-600">→</span>
+        <input type="datetime-local"
+          value={activityFilter.to_ts}
+          onChange={(e) => { setActivityFilter((f) => ({ ...f, to_ts: e.target.value })); setActivityPage(0); }}
+          className="rounded-lg border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-400 focus:border-sky-400/50 focus:outline-none" />
+        {(activityFilter.action_prefix || activityFilter.username || activityFilter.outcome || activityFilter.from_ts || activityFilter.to_ts) && (
+          <button
+            onClick={() => { setActivityFilter({ action_prefix: "", username: "", outcome: "", from_ts: "", to_ts: "" }); setActivityPage(0); setActivityNewCount(0); }}
+            className="rounded-lg border border-neutral-700 px-2.5 py-1 text-xs text-neutral-400 hover:text-white">
+            Clear
+          </button>
+        )}
+      </div>
+
+      {/* Event table */}
+      <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70">
+        {activityError ? (
+          <div className="px-4 py-8 text-center text-sm text-rose-400">{activityError}</div>
+        ) : activityLoading ? (
+          <div className="px-4 py-12 text-center text-sm text-neutral-500">Loading events…</div>
+        ) : activityEvents.length === 0 ? (
+          <div className="px-4 py-12 text-center text-sm text-neutral-500">No events match the current filters.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-neutral-800 text-left text-neutral-500">
+                  <th className="px-4 py-2.5 font-medium">Time</th>
+                  <th className="px-3 py-2.5 font-medium">User</th>
+                  <th className="px-3 py-2.5 font-medium">Action</th>
+                  <th className="px-3 py-2.5 font-medium">Target</th>
+                  <th className="px-3 py-2.5 font-medium">Outcome</th>
+                  <th className="px-3 py-2.5 font-medium text-right">IP</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-800/50">
+                {activityEvents.map((ev) => (
+                  <tr key={ev.id}
+                    className={["transition-colors", ev.outcome === "failure" ? "bg-rose-500/5 hover:bg-rose-500/10" : "hover:bg-neutral-800/40"].join(" ")}>
+                    <td className="px-4 py-2.5 whitespace-nowrap">
+                      <span className="text-neutral-300" title={new Date(ev.ts).toLocaleString()}>
+                        {relTime(ev.ts)}
+                      </span>
+                      <div className="text-[10px] text-neutral-600">{new Date(ev.ts).toLocaleTimeString()}</div>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <div className="font-medium text-neutral-200">{ev.username}</div>
+                      <span className={["rounded-full border px-1.5 py-0.5 text-[10px]", roleColor(ev.role)].join(" ")}>
+                        {ev.role}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span className={["font-mono", actionColor(ev.action)].join(" ")}>{ev.action}</span>
+                    </td>
+                    <td className="px-3 py-2.5 max-w-[140px] truncate text-neutral-400" title={ev.target || ""}>
+                      {ev.target || <span className="text-neutral-700">—</span>}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span className={["rounded-full border px-1.5 py-0.5 text-[10px]",
+                        ev.outcome === "success"
+                          ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-300"
+                          : "border-rose-400/30 bg-rose-500/10 text-rose-300"].join(" ")}>
+                        {ev.outcome}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 text-right font-mono text-neutral-600">{ev.ip || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {/* Pagination */}
+        {!activityLoading && activityTotal !== null && (
+          <div className="flex items-center justify-between border-t border-neutral-800 px-4 py-3">
+            <div className="text-xs text-neutral-500">
+              Showing {activityPage * 50 + 1}–{Math.min((activityPage + 1) * 50, activityTotal)} of {activityTotal.toLocaleString()}
+            </div>
+            <div className="flex gap-2">
+              <button
+                disabled={activityPage === 0}
+                onClick={() => setActivityPage((p) => p - 1)}
+                className="rounded-lg border border-neutral-700 px-3 py-1 text-xs text-neutral-400 hover:text-white disabled:opacity-30">
+                ← Prev
+              </button>
+              <button
+                disabled={(activityPage + 1) * 50 >= activityTotal}
+                onClick={() => setActivityPage((p) => p + 1)}
+                className="rounded-lg border border-neutral-700 px-3 py-1 text-xs text-neutral-400 hover:text-white disabled:opacity-30">
+                Next →
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   const inventoryBoard = (
     <div className="space-y-4">
       {selectedService ? serviceDetailView : <>
@@ -4855,6 +5119,9 @@ function PrivateNexusDashboard({ authUser }) {
               )}
             </div>
           )}
+
+          {/* Activity feed */}
+          {activeBoard === "Activity" && activityBoard}
 
           {/* Emergency */}
           {activeBoard === "Emergency" && (
