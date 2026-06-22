@@ -44,7 +44,7 @@ services:
       LOKI_URL: ${LOKI_URL:-http://10.10.50.104:3100}
       NODE_INSTANCE: ${NODE_INSTANCE:-pn-test}
       KEYCLOAK_URL: ${KEYCLOAK_URL:-https://auth.house-of-trae.com}
-      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-securenexus}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-privatenexus}
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-privatenexus}
       AUTH_REDIRECT_URI: ${AUTH_REDIRECT_URI:-https://privatenexus.net/api/auth/callback}
       AUTH_POST_LOGOUT_URI: ${AUTH_POST_LOGOUT_URI:-https://privatenexus.net}

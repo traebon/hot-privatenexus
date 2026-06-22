@@ -6,7 +6,7 @@ import { recordAudit } from "../auditLog.js";
 export const authRouter = Router();
 
 const KEYCLOAK_URL   = process.env.KEYCLOAK_URL   || "https://auth.house-of-trae.com";
-const KEYCLOAK_REALM = process.env.KEYCLOAK_REALM || "securenexus";
+const KEYCLOAK_REALM = process.env.KEYCLOAK_REALM || "privatenexus";
 const CLIENT_ID      = process.env.KEYCLOAK_CLIENT_ID || "privatenexus";
 const REDIRECT_URI   = process.env.AUTH_REDIRECT_URI  || "https://privatenexus.net/api/auth/callback";
 const POST_LOGOUT_URI = process.env.AUTH_POST_LOGOUT_URI || "https://privatenexus.net";

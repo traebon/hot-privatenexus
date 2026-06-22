@@ -14,6 +14,20 @@ const MAINTENANCE_FILE = "/tmp/pn-maintenance.json";
 
 const ALLOWED_ACTIONS = new Set(["start", "stop", "restart"]);
 
+// Containers that may never be stopped or restarted via the actions API.
+// Stopping the database or cache mid-session causes data loss and session wipe.
+const CONTAINER_BLOCKLIST = new Set([
+  "privatenexus-db",
+  "privatenexus-redis",
+]);
+
+// Only containers in this list may be targeted by the /run endpoint.
+// Add container names here as the managed estate grows.
+const CONTAINER_ALLOWLIST = new Set([
+  "privatenexus-frontend",
+  "privatenexus-backend",
+]);
+
 // POST /api/actions/run — { action, containerId } (also accepts target for compat)
 // action: "start" | "stop" | "restart"
 // containerId: container id or name
@@ -26,6 +40,16 @@ actionsRouter.post("/run", async (req, res) => {
   }
   if (!id) {
     return res.status(400).json({ ok: false, error: "action and containerId are required" });
+  }
+
+  if (CONTAINER_BLOCKLIST.has(id)) {
+    recordAudit(req, `container.${action}.blocked`, id, "failure", { reason: "blocklisted" });
+    return res.status(403).json({ ok: false, error: `Container '${id}' cannot be controlled via this API` });
+  }
+
+  if (!CONTAINER_ALLOWLIST.has(id)) {
+    recordAudit(req, `container.${action}.blocked`, id, "failure", { reason: "not in allowlist" });
+    return res.status(403).json({ ok: false, error: `Container '${id}' is not in the approved action allowlist` });
   }
 
   try {
@@ -97,6 +121,10 @@ actionsRouter.post("/emergency", requireRole("admin"), async (req, res) => {
       const results = [];
       for (const c of list) {
         const name = (c.Names?.[0] || "").replace(/^\//, "");
+        if (CONTAINER_BLOCKLIST.has(name)) {
+          results.push({ name, ok: false, skipped: true, reason: "blocklisted — not stopped" });
+          continue;
+        }
         try {
           await docker.getContainer(c.Id).stop({ t: 10 });
           results.push({ name, ok: true });
