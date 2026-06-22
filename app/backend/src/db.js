@@ -190,5 +190,22 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS disc_slug_idx          ON discovery_candidates (tenant_id, suggested_slug);
   `);
 
+  // Agent tokens for discovery ingest (scoped, expirable, revocable)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS agent_tokens (
+      id           UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id    UUID         NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      label        TEXT         NOT NULL,
+      token_hash   TEXT         NOT NULL UNIQUE,
+      expires_at   TIMESTAMPTZ,
+      last_used_at TIMESTAMPTZ,
+      created_by   TEXT         NOT NULL,
+      created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+      revoked      BOOLEAN      NOT NULL DEFAULT FALSE
+    );
+    CREATE INDEX IF NOT EXISTS agent_tokens_tenant_idx ON agent_tokens (tenant_id);
+    CREATE INDEX IF NOT EXISTS agent_tokens_hash_idx   ON agent_tokens (token_hash);
+  `);
+
   console.log("DB connected and schema ready");
 }

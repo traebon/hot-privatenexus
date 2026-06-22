@@ -1,8 +1,37 @@
 import { Router } from "express";
+import { createHash, randomBytes } from "crypto";
+import { readFileSync } from "fs";
+import https from "node:https";
 import Docker from "dockerode";
 import { getPool, HOT_TENANT_ID } from "../db.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
+
+function readSecret(path) {
+  try { return readFileSync(path, "utf8").trim(); } catch { return null; }
+}
+
+function hashToken(t) {
+  return createHash("sha256").update(t).digest("hex");
+}
+
+// HTTPS GET that skips cert verification — used only for Proxmox (self-signed cert)
+function proxmoxFetch(url, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, {
+      method: "GET",
+      headers,
+      agent: new https.Agent({ rejectUnauthorized: false }),
+    }, (res) => {
+      let body = "";
+      res.on("data", (c) => { body += c; });
+      res.on("end", () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, json: () => JSON.parse(body) }));
+    });
+    req.on("error", reject);
+    req.setTimeout(10000, () => req.destroy(new Error("Proxmox request timeout")));
+    req.end();
+  });
+}
 
 export const discoveryRouter = Router();
 
@@ -218,21 +247,17 @@ async function scanLocalDocker(pool, known, results) {
 // ── Proxmox scanner ──────────────────────────────────────────────────────────
 async function scanProxmox(pool, known, results) {
   const baseUrl = process.env.PROXMOX_URL || "https://10.10.0.2:8006/api2/json";
-  const token   = process.env.PROXMOX_TOKEN; // PVEAPIToken=user@realm!name=secret
+  const token   = readSecret("/run/secrets/proxmox_token") ?? process.env.PROXMOX_TOKEN;
 
-  if (!token) throw new Error("PROXMOX_TOKEN not configured — set in compose .env");
+  if (!token) throw new Error("PROXMOX_TOKEN not configured — add proxmox_token secret");
 
   const headers = { Authorization: `PVEAPIToken=${token}` };
   const wsId    = await workspaceBySlug(pool, "infrastructure");
 
   for (const type of ["qemu", "lxc"]) {
-    const r = await fetch(`${baseUrl}/nodes/pve/${type}`, {
-      headers,
-      signal: AbortSignal.timeout(8000),
-      // skip TLS verify for self-signed Proxmox cert
-    });
+    const r = await proxmoxFetch(`${baseUrl}/nodes/pve/${type}`, headers);
     if (!r.ok) throw new Error(`Proxmox API ${type}: HTTP ${r.status}`);
-    const { data } = await r.json();
+    const { data } = r.json();
 
     for (const vm of (data || [])) {
       const name = vm.name || `vm-${vm.vmid}`;
@@ -319,14 +344,32 @@ async function scanCaddy(pool, known, results) {
 }
 
 // ── POST /api/discovery/ingest ── agent push endpoint ───────────────────────
-// Accepts a Bearer token from agents running on remote hosts
+// Accepts a Bearer token verified against the agent_tokens table (or legacy env fallback)
 discoveryRouter.post("/ingest", async (req, res) => {
   const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  const expected = process.env.DISCOVERY_AGENT_TOKEN;
+  const rawToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!rawToken) return res.status(401).json({ ok: false, error: "Unauthorized" });
 
-  if (!expected || token !== expected) {
-    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  const pool = getPool();
+  const hash = hashToken(rawToken);
+
+  // Check agent_tokens table first
+  const { rows: tokenRows } = await pool.query(
+    `SELECT id FROM agent_tokens
+     WHERE tenant_id = $1 AND token_hash = $2 AND revoked = FALSE
+       AND (expires_at IS NULL OR expires_at > NOW())`,
+    [HOT_TENANT_ID, hash]
+  );
+
+  if (!tokenRows.length) {
+    // Fallback: static env/secret token (bootstrap only — rotate to DB tokens)
+    const staticToken = readSecret("/run/secrets/discovery_agent_token") ?? process.env.DISCOVERY_AGENT_TOKEN;
+    if (!staticToken || rawToken !== staticToken) {
+      return res.status(401).json({ ok: false, error: "Unauthorized" });
+    }
+  } else {
+    // Update last_used_at
+    await pool.query("UPDATE agent_tokens SET last_used_at = NOW() WHERE id = $1", [tokenRows[0].id]);
   }
 
   const { candidates: incoming } = req.body;
@@ -334,7 +377,6 @@ discoveryRouter.post("/ingest", async (req, res) => {
     return res.status(400).json({ ok: false, error: "candidates array required" });
   }
 
-  const pool    = getPool();
   const known   = await knownSlugs(pool);
   let inserted  = 0;
   let skipped   = 0;
@@ -347,6 +389,57 @@ discoveryRouter.post("/ingest", async (req, res) => {
   }
 
   res.json({ ok: true, inserted, skipped });
+});
+
+// ── GET /api/discovery/agent-tokens ─────────────────────────────────────────
+discoveryRouter.get("/agent-tokens", requireRole("admin"), async (_req, res) => {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT id, label, expires_at, last_used_at, created_by, created_at, revoked
+       FROM agent_tokens WHERE tenant_id = $1
+       ORDER BY created_at DESC`,
+      [HOT_TENANT_ID]
+    );
+    res.json({ ok: true, tokens: rows });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/discovery/agent-tokens ─────────────────────────────────────────
+// Creates a new agent token — returns plaintext once, never stored
+discoveryRouter.post("/agent-tokens", requireRole("admin"), async (req, res) => {
+  const { label, ttl_hours } = req.body;
+  if (!label?.trim()) return res.status(400).json({ ok: false, error: "label required" });
+
+  const plaintext  = randomBytes(32).toString("hex");
+  const hash       = hashToken(plaintext);
+  const expires_at = ttl_hours ? new Date(Date.now() + ttl_hours * 3600 * 1000) : null;
+  const created_by = req.session?.user?.preferred_username || "admin";
+
+  try {
+    const { rows } = await getPool().query(
+      `INSERT INTO agent_tokens (tenant_id, label, token_hash, expires_at, created_by)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id, label, expires_at, created_at`,
+      [HOT_TENANT_ID, label.trim(), hash, expires_at, created_by]
+    );
+    recordAudit(req, "discovery.agent_token.create", label, "success");
+    res.json({ ok: true, token: plaintext, ...rows[0] });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── DELETE /api/discovery/agent-tokens/:id ───────────────────────────────────
+discoveryRouter.delete("/agent-tokens/:id", requireRole("admin"), async (req, res) => {
+  const { rows } = await getPool().query(
+    `UPDATE agent_tokens SET revoked = TRUE
+     WHERE id = $1 AND tenant_id = $2 RETURNING id, label`,
+    [req.params.id, HOT_TENANT_ID]
+  );
+  if (!rows[0]) return res.status(404).json({ ok: false, error: "Token not found" });
+  recordAudit(req, "discovery.agent_token.revoke", rows[0].label, "success");
+  res.json({ ok: true, revoked: rows[0].label });
 });
 
 // ── PATCH /api/discovery/candidates/:id ──────────────────────────────────────

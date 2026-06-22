@@ -547,6 +547,12 @@ function PrivateNexusDashboard({ authUser }) {
   const [discEditId, setDiscEditId]           = useState(null);
   const [discEditForm, setDiscEditForm]       = useState({});
   const [discActionPending, setDiscActionPending] = useState(null);
+  const [agentTokens, setAgentTokens]         = useState([]);
+  const [agentTokensLoading, setAgentTokensLoading] = useState(false);
+  const [newTokenLabel, setNewTokenLabel]     = useState("");
+  const [newTokenTTL, setNewTokenTTL]         = useState("168");
+  const [createdToken, setCreatedToken]       = useState(null);
+  const [agentTokensOpen, setAgentTokensOpen] = useState(false);
 
   // Admin panel — certs / disk / users / backup run
   const [certData, setCertData] = useState(null);
@@ -3850,6 +3856,35 @@ function PrivateNexusDashboard({ authUser }) {
     finally { setDiscDriftLoading(false); }
   };
 
+  const loadAgentTokens = async () => {
+    setAgentTokensLoading(true);
+    try {
+      const r = await fetch("/api/discovery/agent-tokens");
+      const d = await r.json();
+      if (d.ok) setAgentTokens(d.tokens);
+    } catch {/* ignore */} finally { setAgentTokensLoading(false); }
+  };
+
+  const createAgentToken = async () => {
+    if (!newTokenLabel.trim()) return;
+    const r = await fetch("/api/discovery/agent-tokens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: newTokenLabel, ttl_hours: Number(newTokenTTL) || null }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      setCreatedToken(d.token);
+      setNewTokenLabel("");
+      await loadAgentTokens();
+    }
+  };
+
+  const revokeAgentToken = async (id) => {
+    await fetch(`/api/discovery/agent-tokens/${id}`, { method: "DELETE" });
+    await loadAgentTokens();
+  };
+
   const completenessBar = (score) => {
     const colour = score >= 80 ? "bg-emerald-500" : score >= 50 ? "bg-amber-500" : "bg-rose-500";
     return (
@@ -4055,19 +4090,86 @@ function PrivateNexusDashboard({ authUser }) {
         )}
       </div>
 
-      {/* Agent instructions */}
-      <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-4">
-        <h3 className="text-sm font-medium text-white mb-2">Remote Agent</h3>
-        <p className="text-xs text-neutral-400 mb-3">
-          Run the Docker agent on any host to push container candidates to PrivateNexus.
-          Requires <code className="rounded bg-neutral-800 px-1 text-teal-300">DISCOVERY_AGENT_TOKEN</code> set in compose env.
-        </p>
-        <pre className="overflow-x-auto rounded-lg bg-neutral-800 p-3 text-[10px] text-neutral-300 leading-relaxed">{`PRIVATENEXUS_URL=https://privatenexus.net \\
-DISCOVERY_AGENT_TOKEN=your-token \\
-bash /opt/privatenexus/agents/docker-agent.sh`}</pre>
-        <p className="mt-2 text-[10px] text-neutral-600">
-          Add <code className="text-teal-400/70">pn.*</code> Docker labels to containers to improve completeness scores.
-        </p>
+      {/* Agent Tokens */}
+      <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60">
+        <button
+          className="flex w-full items-center justify-between px-4 py-3"
+          onClick={() => { setAgentTokensOpen(!agentTokensOpen); if (!agentTokensOpen) loadAgentTokens(); }}
+        >
+          <h3 className="text-sm font-medium text-white">Agent Tokens</h3>
+          <span className="text-xs text-neutral-500">{agentTokensOpen ? "▲ collapse" : "▼ expand"}</span>
+        </button>
+        {agentTokensOpen && (
+          <div className="border-t border-neutral-800 px-4 pb-4 pt-3 space-y-3">
+            {createdToken && (
+              <div className="rounded-lg border border-teal-400/30 bg-teal-500/10 p-3">
+                <p className="text-xs font-medium text-teal-300 mb-1">Token created — copy now, it will not be shown again</p>
+                <code className="block break-all rounded bg-neutral-800 p-2 text-[10px] text-teal-200 select-all">{createdToken}</code>
+                <button className="mt-2 text-[10px] text-neutral-500 hover:text-neutral-300" onClick={() => setCreatedToken(null)}>dismiss</button>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                className="flex-1 rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-white placeholder:text-neutral-600"
+                placeholder="Token label (e.g. sn-infra agent)"
+                value={newTokenLabel}
+                onChange={(e) => setNewTokenLabel(e.target.value)}
+              />
+              <select
+                className="rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-white"
+                value={newTokenTTL}
+                onChange={(e) => setNewTokenTTL(e.target.value)}
+              >
+                <option value="24">24h</option>
+                <option value="168">7d</option>
+                <option value="720">30d</option>
+                <option value="">No expiry</option>
+              </select>
+              <button
+                className="rounded-lg border border-teal-500/40 bg-teal-600/20 px-3 py-1 text-xs text-teal-300 hover:bg-teal-600/30 disabled:opacity-50"
+                onClick={createAgentToken}
+                disabled={!newTokenLabel.trim()}
+              >
+                Create
+              </button>
+            </div>
+            {agentTokensLoading ? (
+              <div className="text-center py-3 text-xs text-neutral-500">Loading…</div>
+            ) : agentTokens.length === 0 ? (
+              <div className="text-center py-3 text-xs text-neutral-600">No agent tokens yet</div>
+            ) : (
+              <div className="divide-y divide-neutral-800 rounded-lg border border-neutral-800">
+                {agentTokens.map((t) => (
+                  <div key={t.id} className="flex items-center justify-between px-3 py-2">
+                    <div>
+                      <span className={`text-xs font-medium ${t.revoked ? "line-through text-neutral-600" : "text-white"}`}>{t.label}</span>
+                      <span className="ml-2 text-[10px] text-neutral-500">
+                        {t.expires_at ? `expires ${new Date(t.expires_at).toLocaleDateString()}` : "no expiry"}
+                      </span>
+                      {t.last_used_at && (
+                        <span className="ml-2 text-[10px] text-neutral-600">
+                          last used {new Date(t.last_used_at).toLocaleDateString()}
+                        </span>
+                      )}
+                    </div>
+                    {!t.revoked && (
+                      <button
+                        className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[10px] text-rose-400 hover:bg-rose-500/20"
+                        onClick={() => revokeAgentToken(t.id)}
+                      >
+                        Revoke
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-[10px] text-neutral-600 pt-1">
+              Use with:&nbsp;
+              <code className="text-teal-400/70">DISCOVERY_AGENT_TOKEN=&lt;token&gt; bash docker-agent.sh</code>
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-# PrivateNexus v1.10.0 — Logs board, Admin user mgmt, service registration modal, runHealthCheck fix, Catalogue board, Files board register
+# PrivateNexus v1.18.0 — Discovery agent tokens, Proxmox/Caddy scanner activation
 services:
   privatenexus-db:
     image: postgres:16-alpine
@@ -55,10 +55,14 @@ services:
       REDIS_URL: redis://privatenexus-redis:6379
       HEALTH_CHECK_INTERVAL_MS: ${HEALTH_CHECK_INTERVAL_MS:-60000}
       HEALTH_EVENT_RETENTION_DAYS: ${HEALTH_EVENT_RETENTION_DAYS:-30}
+      PROXMOX_URL: ${PROXMOX_URL:-https://10.10.0.2:8006/api2/json}
+      CADDY_ADMIN_URL: ${CADDY_ADMIN_URL:-http://10.10.0.1:2019}
     secrets:
       - db_password
       - keycloak_client_secret
       - session_secret
+      - proxmox_token
+      - discovery_agent_token
     ports:
       - "127.0.0.1:${PRIVATENEXUS_BACKEND_PORT:-3001}:3001"
     volumes:
@@ -101,3 +105,7 @@ secrets:
     file: ../secrets/keycloak_client_secret.txt
   session_secret:
     file: ../secrets/session_secret.txt
+  proxmox_token:
+    file: ../secrets/proxmox_token.txt
+  discovery_agent_token:
+    file: ../secrets/discovery_agent_token.txt
