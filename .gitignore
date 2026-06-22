@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+app/frontend/node_modules/
+app/frontend/dist/
+app/backend/node_modules/
+app/backend/data/
+*.bak
+
+# Local design artifacts
+PrivateNexus/
+
+# Secrets — never commit
+secrets/
+.env.development
+.env.production
+.env.local
+
+# Docker build artifacts
+docker/.env

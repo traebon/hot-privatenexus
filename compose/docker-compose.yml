@@ -1,0 +1,101 @@
+# PrivateNexus v1.10.0 — Logs board, Admin user mgmt, service registration modal, runHealthCheck fix, Catalogue board, Files board register
+services:
+  privatenexus-db:
+    image: postgres:16-alpine
+    container_name: privatenexus-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: privatenexus
+      POSTGRES_USER: privatenexus
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    volumes:
+      - pn-db-data:/var/lib/postgresql/data
+    networks:
+      - pn-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U privatenexus"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  privatenexus-redis:
+    image: redis:7-alpine
+    container_name: privatenexus-redis
+    restart: unless-stopped
+    networks:
+      - pn-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  privatenexus-backend:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    container_name: privatenexus-backend
+    restart: unless-stopped
+    environment:
+      PORT: ${PRIVATENEXUS_BACKEND_PORT:-3001}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://10.10.50.104:9090}
+      LOKI_URL: ${LOKI_URL:-http://10.10.50.104:3100}
+      NODE_INSTANCE: ${NODE_INSTANCE:-pn-test}
+      KEYCLOAK_URL: ${KEYCLOAK_URL:-https://auth.house-of-trae.com}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-securenexus}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-privatenexus}
+      AUTH_REDIRECT_URI: ${AUTH_REDIRECT_URI:-https://privatenexus.net/api/auth/callback}
+      AUTH_POST_LOGOUT_URI: ${AUTH_POST_LOGOUT_URI:-https://privatenexus.net}
+      DB_HOST: privatenexus-db
+      DB_PORT: 5432
+      DB_NAME: privatenexus
+      DB_USER: privatenexus
+      REDIS_URL: redis://privatenexus-redis:6379
+    secrets:
+      - db_password
+      - keycloak_client_secret
+      - session_secret
+    ports:
+      - "127.0.0.1:${PRIVATENEXUS_BACKEND_PORT:-3001}:3001"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /opt/privatenexus:/opt/privatenexus
+    depends_on:
+      privatenexus-db:
+        condition: service_healthy
+      privatenexus-redis:
+        condition: service_healthy
+    networks:
+      - pn-internal
+      - pn-edge
+
+  privatenexus-frontend:
+    build:
+      context: ..
+      dockerfile: docker/frontend.Dockerfile
+    container_name: privatenexus-frontend
+    restart: unless-stopped
+    ports:
+      - "${PRIVATENEXUS_FRONTEND_PORT:-5173}:80"
+    depends_on:
+      - privatenexus-backend
+    networks:
+      - pn-edge
+
+volumes:
+  pn-db-data:
+
+networks:
+  pn-internal:
+    internal: true
+  pn-edge:
+
+secrets:
+  db_password:
+    file: ../secrets/db_password.txt
+  keycloak_client_secret:
+    file: ../secrets/keycloak_client_secret.txt
+  session_secret:
+    file: ../secrets/session_secret.txt

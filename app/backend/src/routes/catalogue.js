@@ -1,0 +1,94 @@
+import { Router } from "express";
+import { requireRole } from "../middleware/requireRole.js";
+
+export const catalogueRouter = Router();
+
+const APPS = [
+  // ── Media ──────────────────────────────────────────────────────────────────
+  { id:"jellyfin",       name:"Jellyfin",          category:"media",       stars:38, description:"Free software media system for movies, TV, music and photos.",          image:"jellyfin/jellyfin",              site:"https://jellyfin.org",            access_mode:"sso",      backup:"weekly", tags:["streaming","movies","music"] },
+  { id:"immich",         name:"Immich",            category:"media",       stars:62, description:"High-performance self-hosted photo and video backup.",                   image:"ghcr.io/immich-app/immich-server",site:"https://immich.app",             access_mode:"sso",      backup:"daily",  tags:["photos","backup","mobile"] },
+  { id:"navidrome",      name:"Navidrome",         category:"media",       stars:13, description:"Modern music server and streamer compatible with Subsonic clients.",     image:"deluan/navidrome",               site:"https://navidrome.org",           access_mode:"public",   backup:"weekly", tags:["music","streaming"] },
+  { id:"audiobookshelf", name:"Audiobookshelf",    category:"media",       stars:8,  description:"Self-hosted audiobook and podcast server.",                             image:"ghcr.io/advplyr/audiobookshelf", site:"https://audiobookshelf.org",      access_mode:"sso",      backup:"weekly", tags:["audiobooks","podcasts"] },
+  { id:"kavita",         name:"Kavita",            category:"media",       stars:6,  description:"Fast, feature-rich comic and manga reader server.",                     image:"kizaing/kavita",                 site:"https://kavitareader.com",        access_mode:"sso",      backup:"weekly", tags:["comics","manga","books"] },
+  { id:"stash",          name:"Stash",             category:"media",       stars:9,  description:"Locally hosted organizer for your video collection.",                   image:"stashapp/stash",                 site:"https://stashapp.cc",             access_mode:"internal", backup:"weekly", tags:["video","organizer"] },
+
+  // ── Productivity ───────────────────────────────────────────────────────────
+  { id:"nextcloud",      name:"Nextcloud",         category:"productivity",stars:29, description:"Files, calendar, contacts, tasks, and much more. The private cloud.",   image:"nextcloud",                      site:"https://nextcloud.com",           access_mode:"sso",      backup:"daily",  tags:["files","calendar","contacts"] },
+  { id:"paperless-ngx",  name:"Paperless-ngx",     category:"productivity",stars:24, description:"Scan, index, and archive physical documents with full-text search.",    image:"ghcr.io/paperless-ngx/paperless-ngx",site:"https://docs.paperless-ngx.com",access_mode:"sso",   backup:"daily",  tags:["documents","ocr","archive"] },
+  { id:"bookstack",      name:"BookStack",         category:"productivity",stars:15, description:"Simple, self-hosted, wiki-style knowledge base platform.",              image:"lscr.io/linuxserver/bookstack",  site:"https://bookstackapp.com",        access_mode:"sso",      backup:"daily",  tags:["wiki","docs","knowledge"] },
+  { id:"notesnook",      name:"Notesnook",         category:"productivity",stars:11, description:"Zero-knowledge encrypted notes synced across all your devices.",        image:"streetwriters/notesnook-sync",   site:"https://notesnook.com",           access_mode:"sso",      backup:"daily",  tags:["notes","encrypted","sync"] },
+  { id:"vikunja",        name:"Vikunja",           category:"productivity",stars:5,  description:"Open source, self-hosted to-do app — the open source solution.",       image:"vikunja/vikunja",                site:"https://vikunja.io",              access_mode:"sso",      backup:"weekly", tags:["tasks","todo","projects"] },
+  { id:"memos",          name:"Memos",             category:"productivity",stars:38, description:"Privacy-first, lightweight personal knowledge base and note-taking hub.",image:"neosmemo/memos",                site:"https://usememos.com",            access_mode:"sso",      backup:"weekly", tags:["notes","markdown","quick"] },
+  { id:"stirling-pdf",   name:"Stirling PDF",      category:"productivity",stars:49, description:"Locally hosted web app to manipulate PDFs — merge, split, convert.",   image:"stirlingtools/stirling-pdf",     site:"https://stirlingpdf.com",         access_mode:"internal", backup:"none",   tags:["pdf","convert","tools"] },
+  { id:"linkding",       name:"Linkding",          category:"productivity",stars:7,  description:"Self-hosted bookmarks manager with tags and full-text search.",         image:"sissbruecker/linkding",          site:"https://github.com/sissbruecker/linkding",access_mode:"sso",backup:"weekly",tags:["bookmarks","links"] },
+  { id:"freshrss",       name:"FreshRSS",          category:"productivity",stars:11, description:"Self-hostable RSS and Atom feed aggregator.",                           image:"freshrss/freshrss",              site:"https://freshrss.org",            access_mode:"sso",      backup:"weekly", tags:["rss","feeds","news"] },
+
+  // ── Finance ────────────────────────────────────────────────────────────────
+  { id:"actual-budget",  name:"Actual Budget",     category:"finance",     stars:16, description:"Local-first personal finance app with powerful budgeting tools.",      image:"actualbudget/actual-server",     site:"https://actualbudget.org",        access_mode:"sso",      backup:"daily",  tags:["budget","finance","money"] },
+  { id:"firefly-iii",    name:"Firefly III",       category:"finance",     stars:17, description:"Personal financial manager with double-entry bookkeeping.",            image:"fireflyiii/core",                site:"https://firefly-iii.org",         access_mode:"sso",      backup:"daily",  tags:["finance","accounting","budgeting"] },
+  { id:"maybe",          name:"Maybe Finance",     category:"finance",     stars:42, description:"Open source OS for your personal finances.",                           image:"ghcr.io/maybe-finance/maybe",    site:"https://maybefinance.com",        access_mode:"sso",      backup:"daily",  tags:["finance","net-worth","investing"] },
+  { id:"invoice-ninja",  name:"Invoice Ninja",     category:"finance",     stars:8,  description:"Open source invoicing, expenses, and time-tracking for freelancers.", image:"invoiceninja/invoiceninja",      site:"https://invoiceninja.com",        access_mode:"sso",      backup:"daily",  tags:["invoicing","billing","crm"] },
+
+  // ── Dev & Ops ──────────────────────────────────────────────────────────────
+  { id:"forgejo",        name:"Forgejo",           category:"devops",      stars:6,  description:"Self-hosted lightweight software forge — git, CI, packages.",          image:"codeberg.org/forgejo/forgejo",   site:"https://forgejo.org",             access_mode:"sso",      backup:"daily",  tags:["git","ci","forge"] },
+  { id:"woodpecker-ci",  name:"Woodpecker CI",     category:"devops",      stars:4,  description:"Simple yet powerful CI/CD engine with great Forgejo integration.",     image:"woodpeckerci/woodpecker-server", site:"https://woodpecker-ci.org",       access_mode:"sso",      backup:"weekly", tags:["ci","cd","pipeline"] },
+  { id:"portainer",      name:"Portainer",         category:"devops",      stars:31, description:"Container management UI for Docker, Swarm, Kubernetes.",              image:"portainer/portainer-ce",         site:"https://portainer.io",            access_mode:"internal", backup:"weekly", tags:["docker","containers","management"] },
+  { id:"uptime-kuma",    name:"Uptime Kuma",       category:"devops",      stars:62, description:"Self-hosted monitoring tool for websites and services.",              image:"louislam/uptime-kuma",           site:"https://uptime.kuma.pet",         access_mode:"public",   backup:"weekly", tags:["monitoring","uptime","status"] },
+  { id:"ntfy",           name:"ntfy",              category:"devops",      stars:20, description:"Simple pub/sub notification service — HTTP PUT/POST to send pushes.", image:"binwiederhier/ntfy",             site:"https://ntfy.sh",                 access_mode:"public",   backup:"none",   tags:["notifications","push","alerts"] },
+  { id:"grafana",        name:"Grafana",           category:"devops",      stars:64, description:"Open source analytics and interactive visualisation platform.",       image:"grafana/grafana",                site:"https://grafana.com",             access_mode:"sso",      backup:"weekly", tags:["metrics","dashboards","analytics"] },
+  { id:"prometheus",     name:"Prometheus",        category:"devops",      stars:56, description:"Monitoring system and time-series database with powerful query language.",image:"prom/prometheus",            site:"https://prometheus.io",           access_mode:"internal", backup:"none",   tags:["metrics","monitoring","alerting"] },
+  { id:"netdata",        name:"Netdata",           category:"devops",      stars:73, description:"Real-time performance monitoring for systems and applications.",      image:"netdata/netdata",                site:"https://netdata.cloud",           access_mode:"internal", backup:"none",   tags:["monitoring","performance","realtime"] },
+  { id:"dozzle",         name:"Dozzle",            category:"devops",      stars:5,  description:"Realtime log viewer for Docker containers with no storage needed.",   image:"amir20/dozzle",                  site:"https://dozzle.dev",              access_mode:"internal", backup:"none",   tags:["logs","docker","realtime"] },
+  { id:"watchtower",     name:"Watchtower",        category:"devops",      stars:21, description:"Automatically update Docker container images.",                       image:"containrrr/watchtower",          site:"https://containrrr.dev/watchtower",access_mode:"internal",backup:"none",  tags:["docker","updates","automation"] },
+
+  // ── Security & Auth ────────────────────────────────────────────────────────
+  { id:"vaultwarden",    name:"Vaultwarden",       category:"security",    stars:40, description:"Lightweight Bitwarden-compatible server written in Rust.",            image:"vaultwarden/server",             site:"https://github.com/dani-garcia/vaultwarden",access_mode:"sso",backup:"daily",tags:["passwords","bitwarden","vault"] },
+  { id:"keycloak",       name:"Keycloak",          category:"security",    stars:24, description:"Open source Identity and Access Management — SSO, OIDC, SAML.",       image:"quay.io/keycloak/keycloak",      site:"https://keycloak.org",            access_mode:"public",   backup:"daily",  tags:["sso","oidc","identity","auth"] },
+  { id:"authentik",      name:"Authentik",         category:"security",    stars:14, description:"Open source identity provider focused on flexibility and ease of use.",image:"ghcr.io/goauthentik/server",    site:"https://goauthentik.io",          access_mode:"public",   backup:"daily",  tags:["sso","oidc","identity","auth"] },
+  { id:"crowdsec",       name:"CrowdSec",          category:"security",    stars:9,  description:"Open source security engine with crowd-sourced IP blocklists.",       image:"crowdsecurity/crowdsec",         site:"https://crowdsec.net",            access_mode:"internal", backup:"none",   tags:["security","waf","blocklist"] },
+  { id:"wazuh",          name:"Wazuh",             category:"security",    stars:11, description:"Open source security platform for threat detection and compliance.",  image:"wazuh/wazuh-manager",            site:"https://wazuh.com",               access_mode:"internal", backup:"weekly", tags:["siem","detection","compliance"] },
+  { id:"fail2ban",       name:"Fail2ban",          category:"security",    stars:13, description:"Intrusion prevention framework that reads logs and bans offenders.",  image:"crazymax/fail2ban",              site:"https://fail2ban.org",            access_mode:"internal", backup:"none",   tags:["security","intrusion","ban"] },
+
+  // ── Network ────────────────────────────────────────────────────────────────
+  { id:"adguard-home",   name:"AdGuard Home",      category:"network",     stars:26, description:"Network-wide DNS-based ad and tracker blocking.",                    image:"adguard/adguardhome",            site:"https://adguard.com/adguard-home",access_mode:"internal", backup:"weekly", tags:["dns","adblock","privacy"] },
+  { id:"pihole",         name:"Pi-hole",           category:"network",     stars:49, description:"Network-level advertisement and internet tracker blocking.",         image:"pihole/pihole",                  site:"https://pi-hole.net",             access_mode:"internal", backup:"weekly", tags:["dns","adblock","network"] },
+  { id:"nginx-proxy-manager",name:"Nginx Proxy Manager",category:"network",stars:23,"description":"Reverse proxy management with easy SSL via Let's Encrypt.",         image:"jc21/nginx-proxy-manager",       site:"https://nginxproxymanager.com",   access_mode:"internal", backup:"weekly", tags:["proxy","ssl","nginx"] },
+  { id:"traefik",        name:"Traefik",           category:"network",     stars:52, description:"Cloud-native application proxy with automatic service discovery.",    image:"traefik",                        site:"https://traefik.io",              access_mode:"internal", backup:"weekly", tags:["proxy","load-balancer","ingress"] },
+  { id:"wireguard-easy", name:"WireGuard Easy",    category:"network",     stars:17, description:"Simplest way to run WireGuard VPN with a web UI.",                   image:"ghcr.io/wg-easy/wg-easy",        site:"https://github.com/wg-easy/wg-easy",access_mode:"internal",backup:"weekly",tags:["vpn","wireguard","network"] },
+  { id:"technitium-dns", name:"Technitium DNS",    category:"network",     stars:5,  description:"Open source DNS server with authoritative and recursive modes.",      image:"technitium/dns-server",          site:"https://technitium.com/dns",      access_mode:"internal", backup:"weekly", tags:["dns","authoritative","recursive"] },
+
+  // ── Communication ──────────────────────────────────────────────────────────
+  { id:"matrix-synapse", name:"Matrix Synapse",    category:"communication",stars:13,"description":"Matrix.org homeserver for decentralised, end-to-end encrypted chat.",image:"matrixdotorg/synapse",          site:"https://matrix.org",              access_mode:"public",   backup:"daily",  tags:["chat","matrix","e2e"] },
+  { id:"mattermost",     name:"Mattermost",        category:"communication",stars:30,"description":"Open source collaboration platform — channels, calls, playbooks.",  image:"mattermost/mattermost-team-edition",site:"https://mattermost.com",       access_mode:"sso",      backup:"daily",  tags:["chat","collaboration","team"] },
+  { id:"gotify",         name:"Gotify",            category:"communication",stars:11, description:"Self-hosted push notification server — simple REST API.",            image:"gotify/server",                  site:"https://gotify.net",              access_mode:"public",   backup:"none",   tags:["notifications","push","api"] },
+
+  // ── Business ───────────────────────────────────────────────────────────────
+  { id:"erpnext",        name:"ERPNext",           category:"business",    stars:23, description:"Full-featured, open source ERP for businesses of all sizes.",         image:"frappe/erpnext",                 site:"https://erpnext.com",             access_mode:"sso",      backup:"daily",  tags:["erp","accounting","hr","inventory"] },
+  { id:"hoppscotch",     name:"Hoppscotch",        category:"business",    stars:64, description:"Open source API development ecosystem — the OSS Postman.",            image:"hoppscotch/hoppscotch",          site:"https://hoppscotch.io",           access_mode:"internal", backup:"none",   tags:["api","rest","testing"] },
+  { id:"planka",         name:"Planka",            category:"business",    stars:10, description:"Realtime kanban board for workgroups — Trello-like.",                 image:"ghcr.io/plankanban/planka",      site:"https://planka.app",              access_mode:"sso",      backup:"weekly", tags:["kanban","projects","tasks"] },
+  { id:"docmost",        name:"Docmost",           category:"business",    stars:9,  description:"Open source collaborative wiki and documentation platform.",          image:"docmost/docmost",                site:"https://docmost.com",             access_mode:"sso",      backup:"daily",  tags:["wiki","docs","collaboration"] },
+  { id:"cal-com",        name:"Cal.com",           category:"business",    stars:33, description:"Open source scheduling platform — the OSS Calendly.",                image:"calcom/cal.com",                 site:"https://cal.com",                 access_mode:"public",   backup:"weekly", tags:["scheduling","calendar","meetings"] },
+
+  // ── Home & IoT ─────────────────────────────────────────────────────────────
+  { id:"home-assistant", name:"Home Assistant",    category:"home",        stars:74, description:"Open source home automation for local control and privacy.",          image:"homeassistant/home-assistant",   site:"https://home-assistant.io",       access_mode:"sso",      backup:"daily",  tags:["home","automation","iot"] },
+  { id:"grocy",          name:"Grocy",             category:"home",        stars:7,  description:"ERP for your home — groceries, chores, tasks, products.",             image:"lscr.io/linuxserver/grocy",      site:"https://grocy.info",              access_mode:"sso",      backup:"weekly", tags:["groceries","home","tasks"] },
+  { id:"mealie",         name:"Mealie",            category:"home",        stars:8,  description:"Self-hosted recipe manager and meal planner.",                        image:"ghcr.io/mealie-recipes/mealie",  site:"https://mealie.io",               access_mode:"sso",      backup:"weekly", tags:["recipes","meal-planning","food"] },
+];
+
+const CATEGORIES = ["all","media","productivity","finance","devops","security","network","communication","business","home"];
+
+// GET /api/catalogue — full curated app list
+catalogueRouter.get("/", requireRole("viewer"), (req, res) => {
+  const { category, q } = req.query;
+  let apps = APPS;
+  if (category && category !== "all") apps = apps.filter((a) => a.category === category);
+  if (q) {
+    const lq = q.toLowerCase();
+    apps = apps.filter((a) =>
+      a.name.toLowerCase().includes(lq) ||
+      a.description.toLowerCase().includes(lq) ||
+      a.tags.some((t) => t.includes(lq))
+    );
+  }
+  res.json({ ok: true, apps, categories: CATEGORIES, total: APPS.length });
+});
