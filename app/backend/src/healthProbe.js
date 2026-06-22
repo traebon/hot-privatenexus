@@ -1,9 +1,33 @@
+import net from "node:net";
 import { getPool, HOT_TENANT_ID } from "./db.js";
 
 const PROBE_TIMEOUT_MS = Number(process.env.HEALTH_PROBE_TIMEOUT_MS || 8000);
 
+// TCP probe: opens a connection to host:port, closes it immediately on success.
+// health_endpoint format: tcp://host:port
+function probeTcp(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const socket = new net.Socket();
+    let settled = false;
+
+    const finish = (status, error = null) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve({ status, latencyMs: Date.now() - start, error });
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.connect(port, host, () => finish("healthy"));
+    socket.on("timeout", () => finish("down", "timeout"));
+    socket.on("error",   (err) => finish("down", err.message));
+  });
+}
+
 /**
  * Probes all non-archived services that have a health_endpoint.
+ * Supports http://, https://, and tcp://host:port endpoints.
  * Updates services.status and writes one health_events row per service.
  * Returns the results array.
  *
@@ -22,6 +46,22 @@ export async function probeAllServices(source = "scheduler") {
 
   const probeOne = async (svc) => {
     const start = Date.now();
+
+    // TCP probe branch
+    if (svc.health_endpoint.startsWith("tcp://")) {
+      try {
+        const url  = new URL(svc.health_endpoint);
+        const host = url.hostname;
+        const port = Number(url.port);
+        if (!host || !port) throw new Error("invalid tcp:// endpoint — must be tcp://host:port");
+        const { status, latencyMs, error } = await probeTcp(host, port, PROBE_TIMEOUT_MS);
+        return { id: svc.id, slug: svc.slug, status, statusCode: null, latencyMs, error };
+      } catch (err) {
+        return { id: svc.id, slug: svc.slug, status: "down", statusCode: null, latencyMs: Date.now() - start, error: err.message };
+      }
+    }
+
+    // HTTP/HTTPS probe branch
     try {
       const r = await fetch(svc.health_endpoint, {
         method: "GET",

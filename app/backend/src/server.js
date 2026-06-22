@@ -66,7 +66,7 @@ app.use(
 
 // Public routes — no auth required
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, service: "privatenexus-backend", version: "1.12.0" })
+  res.json({ ok: true, service: "privatenexus-backend", version: "1.13.0" })
 );
 app.use("/api/auth", authRouter);
 

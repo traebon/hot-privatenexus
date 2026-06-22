@@ -42,6 +42,9 @@ function PrivateNexusDashboard({ authUser }) {
     const [inspectData, setInspectData] = useState(null);
     const [inspectLoading, setInspectLoading] = useState(false);
 
+    // Action confirmation modal state
+    const [pendingConfirm, setPendingConfirm] = useState(null); // { containerId, containerName, action }
+
     // Health badge config — covers all Docker states
     const healthBadge = {
       running:    { dot: "bg-emerald-400",  badge: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30" },
@@ -145,6 +148,37 @@ function PrivateNexusDashboard({ authUser }) {
     const runningCount = projects.reduce((n, p) => n + p.containers.filter((c) => c.state === "running").length, 0);
 
     return (
+      <>
+      {/* Action confirmation modal for Restart / Stop / Start */}
+      {pendingConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-sm rounded-2xl border border-amber-400/20 bg-neutral-950 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-neutral-800 px-6 py-4">
+              <div className="text-base font-semibold capitalize">{pendingConfirm.action} Container</div>
+              <button onClick={() => setPendingConfirm(null)} className="text-neutral-500 hover:text-white text-lg">✕</button>
+            </div>
+            <div className="px-6 py-4 space-y-2 text-sm text-neutral-400">
+              <div className="font-mono text-neutral-200">{pendingConfirm.containerName}</div>
+              <div>{pendingConfirm.action === "restart" ? "This will restart the container. Active connections will be dropped briefly." : pendingConfirm.action === "stop" ? "This will stop the container. The service will be unavailable until manually started." : "This will start the container."}</div>
+              <div className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                This action will be recorded in the audit log.
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-neutral-800 px-6 py-4">
+              <button onClick={() => setPendingConfirm(null)}
+                className="rounded-lg border border-neutral-700 px-4 py-2 text-xs text-neutral-400 hover:text-white">Cancel</button>
+              <button
+                onClick={() => { const { containerId, action } = pendingConfirm; setPendingConfirm(null); runAction(containerId, action); }}
+                className={["rounded-lg border px-4 py-2 text-xs",
+                  pendingConfirm.action === "stop"    ? "border-rose-400/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20" :
+                  pendingConfirm.action === "restart" ? "border-amber-400/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20" :
+                  "border-emerald-400/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"].join(" ")}>
+                Confirm {pendingConfirm.action}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="space-y-4">
         {/* Header */}
         <div className="rounded-2xl border border-amber-400/20 bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-yellow-500/10 p-4">
@@ -246,7 +280,7 @@ function PrivateNexusDashboard({ authUser }) {
                             <button
                               disabled={!!actionPending || !can("operator")}
                               title={!can("operator") ? "Requires operator role" : undefined}
-                              onClick={() => runAction(c.id, "restart")}
+                              onClick={() => setPendingConfirm({ containerId: c.id, containerName: (c.Names?.[0] || c.id).replace(/^\//, ""), action: "restart" })}
                               className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               {actionPending === `${c.id}:restart` ? "…" : "Restart"}
@@ -254,7 +288,7 @@ function PrivateNexusDashboard({ authUser }) {
                             <button
                               disabled={!!actionPending || !can("operator")}
                               title={!can("operator") ? "Requires operator role" : undefined}
-                              onClick={() => runAction(c.id, "stop")}
+                              onClick={() => setPendingConfirm({ containerId: c.id, containerName: (c.Names?.[0] || c.id).replace(/^\//, ""), action: "stop" })}
                               className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-300 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               {actionPending === `${c.id}:stop` ? "…" : "Stop"}
@@ -264,7 +298,7 @@ function PrivateNexusDashboard({ authUser }) {
                           <button
                             disabled={!!actionPending || !can("operator")}
                             title={!can("operator") ? "Requires operator role" : undefined}
-                            onClick={() => runAction(c.id, "start")}
+                            onClick={() => setPendingConfirm({ containerId: c.id, containerName: (c.Names?.[0] || c.id).replace(/^\//, ""), action: "start" })}
                             className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                           >
                             {actionPending === `${c.id}:start` ? "…" : "Start"}
@@ -391,6 +425,7 @@ function PrivateNexusDashboard({ authUser }) {
           </div>
         )}
       </div>
+      </>
     );
   }
 
@@ -2925,7 +2960,7 @@ function PrivateNexusDashboard({ authUser }) {
             { label: "Owner",        value: selectedService.owner || "—" },
             { label: "Backup",       value: selectedService.backup_policy === "none" ? "No backup" : selectedService.backup_policy },
             { label: "Workspace",    value: selectedService.workspace_name || "—" },
-            { label: "Health check", value: selectedService.health_endpoint ? "Configured" : "Not set" },
+            { label: "Health check", value: selectedService.health_endpoint ? (selectedService.health_endpoint.startsWith("tcp://") ? selectedService.health_endpoint : "HTTP configured") : "Not set" },
             { label: "Last updated", value: new Date(selectedService.updated_at).toLocaleString() },
           ].map(({ label, value }) => (
             <div key={label} className="rounded-xl border border-neutral-800 bg-neutral-900/70 px-3 py-2.5">
@@ -3151,6 +3186,21 @@ function PrivateNexusDashboard({ authUser }) {
               </table>
             </div>
           )}
+        </div>
+
+        {/* Restore planner access */}
+        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-sm font-semibold text-neutral-200">Config Files & Restore Planner</div>
+            <button onClick={() => setActiveBoard("Files")}
+              className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-1 text-xs text-rose-300 hover:bg-rose-500/20 transition-colors">
+              Open Files Board ↗
+            </button>
+          </div>
+          <div className="text-xs text-neutral-500 space-y-1">
+            <div>Register config files (Caddyfile, compose.yml, .env) in the <span className="text-rose-300/80">Files board</span> to enable the restore planner, LKG designation, and side-by-side restore mode.</div>
+            <div>The restore planner performs risk assessment and dependency checking before any file restore.</div>
+          </div>
         </div>
       </div>
 
@@ -3586,7 +3636,7 @@ function PrivateNexusDashboard({ authUser }) {
             <div>
               <label className="mb-1 block text-xs text-neutral-400">Health Endpoint</label>
               <input value={serviceForm.health_endpoint} onChange={(e) => setServiceForm((f) => ({ ...f, health_endpoint: e.target.value }))}
-                placeholder="https://.../health or /api/health"
+                placeholder="https://.../health or tcp://host:port"
                 className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 font-mono focus:border-teal-400/50 focus:outline-none" />
             </div>
 
