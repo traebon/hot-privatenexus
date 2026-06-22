@@ -53,7 +53,7 @@ services:
       DB_NAME: privatenexus
       DB_USER: privatenexus
       REDIS_URL: redis://privatenexus-redis:6379
-      HEALTH_CHECK_INTERVAL_MS: ${HEALTH_CHECK_INTERVAL_MS:-120000}
+      HEALTH_CHECK_INTERVAL_MS: ${HEALTH_CHECK_INTERVAL_MS:-60000}
       HEALTH_EVENT_RETENTION_DAYS: ${HEALTH_EVENT_RETENTION_DAYS:-30}
     secrets:
       - db_password

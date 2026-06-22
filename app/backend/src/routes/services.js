@@ -46,7 +46,10 @@ servicesRouter.get("/", async (req, res) => {
       `SELECT s.id, s.name, s.slug, s.description, s.category, s.access_url,
               s.access_mode, s.runtime_type, s.owner, s.backup_policy,
               s.health_endpoint, s.status, s.archived, s.created_at, s.updated_at,
-              s.workspace_id, w.name AS workspace_name
+              s.workspace_id, w.name AS workspace_name,
+              (SELECT COUNT(*)::int FROM service_backups b WHERE b.service_id = s.id AND b.tenant_id = s.tenant_id) AS backup_count,
+              (SELECT COUNT(*)::int FROM service_backups b WHERE b.service_id = s.id AND b.tenant_id = s.tenant_id AND b.trust_state = 'lkg') AS lkg_count,
+              (SELECT COUNT(*)::int FROM service_backups b WHERE b.service_id = s.id AND b.tenant_id = s.tenant_id AND b.trust_state IN ('lkg','trusted')) AS trusted_count
          FROM services s
          LEFT JOIN workspaces w ON w.id = s.workspace_id
         ${where}

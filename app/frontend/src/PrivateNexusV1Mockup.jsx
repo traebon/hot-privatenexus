@@ -280,7 +280,7 @@ function PrivateNexusDashboard({ authUser }) {
                             <button
                               disabled={!!actionPending || !can("operator")}
                               title={!can("operator") ? "Requires operator role" : undefined}
-                              onClick={() => setPendingConfirm({ containerId: c.id, containerName: (c.Names?.[0] || c.id).replace(/^\//, ""), action: "restart" })}
+                              onClick={() => setPendingConfirm({ containerId: c.id, containerName: c.name || c.id, action: "restart" })}
                               className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               {actionPending === `${c.id}:restart` ? "…" : "Restart"}
@@ -288,7 +288,7 @@ function PrivateNexusDashboard({ authUser }) {
                             <button
                               disabled={!!actionPending || !can("operator")}
                               title={!can("operator") ? "Requires operator role" : undefined}
-                              onClick={() => setPendingConfirm({ containerId: c.id, containerName: (c.Names?.[0] || c.id).replace(/^\//, ""), action: "stop" })}
+                              onClick={() => setPendingConfirm({ containerId: c.id, containerName: c.name || c.id, action: "stop" })}
                               className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-300 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               {actionPending === `${c.id}:stop` ? "…" : "Stop"}
@@ -298,7 +298,7 @@ function PrivateNexusDashboard({ authUser }) {
                           <button
                             disabled={!!actionPending || !can("operator")}
                             title={!can("operator") ? "Requires operator role" : undefined}
-                            onClick={() => setPendingConfirm({ containerId: c.id, containerName: (c.Names?.[0] || c.id).replace(/^\//, ""), action: "start" })}
+                            onClick={() => setPendingConfirm({ containerId: c.id, containerName: c.name || c.id, action: "start" })}
                             className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                           >
                             {actionPending === `${c.id}:start` ? "…" : "Start"}
@@ -4082,6 +4082,23 @@ function PrivateNexusDashboard({ authUser }) {
                         ? <a href={svc.access_url} target="_blank" rel="noreferrer" className="text-teal-400 hover:underline truncate">{svc.access_url.replace(/^https?:\/\//, "")}</a>
                         : <span className="text-neutral-600">no URL</span>}
                     </div>
+                  </div>
+
+                  {/* Recovery indicator */}
+                  <div className="mt-2 flex items-center gap-1.5">
+                    {svc.backup_count > 0 ? (
+                      <>
+                        {svc.lkg_count > 0 ? (
+                          <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-300">LKG ✓</span>
+                        ) : svc.trusted_count > 0 ? (
+                          <span className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] text-cyan-300">{svc.backup_count} backup{svc.backup_count !== 1 ? "s" : ""}</span>
+                        ) : (
+                          <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-300">{svc.backup_count} backup{svc.backup_count !== 1 ? "s" : ""} · no trust</span>
+                        )}
+                      </>
+                    ) : svc.backup_policy !== "none" ? (
+                      <span className="rounded-full border border-rose-400/30 bg-rose-500/10 px-2 py-0.5 text-[10px] text-rose-300">No backup records</span>
+                    ) : null}
                   </div>
 
                   {/* Missing fields warning */}
