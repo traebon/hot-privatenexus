@@ -157,5 +157,38 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS service_backups_tenant_idx  ON service_backups (tenant_id);
   `);
 
+  // Discovery candidates
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS discovery_candidates (
+      id                     UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id              UUID         NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      source                 TEXT         NOT NULL,
+      host                   TEXT,
+      raw_name               TEXT,
+      raw_image              TEXT,
+      suggested_slug         TEXT,
+      suggested_name         TEXT,
+      suggested_description  TEXT,
+      suggested_workspace_id UUID         REFERENCES workspaces(id) ON DELETE SET NULL,
+      suggested_category     TEXT,
+      suggested_access_mode  TEXT         NOT NULL DEFAULT 'internal',
+      suggested_runtime      TEXT         NOT NULL DEFAULT 'docker',
+      suggested_health_ep    TEXT,
+      raw_data               JSONB,
+      completeness_score     INT          NOT NULL DEFAULT 0,
+      status                 TEXT         NOT NULL DEFAULT 'pending'
+                                          CHECK (status IN ('pending','approved','rejected','merged')),
+      reject_reason          TEXT,
+      merged_service_id      UUID         REFERENCES services(id) ON DELETE SET NULL,
+      discovered_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+      reviewed_at            TIMESTAMPTZ,
+      reviewed_by            TEXT,
+      created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS disc_tenant_status_idx ON discovery_candidates (tenant_id, status);
+    CREATE INDEX IF NOT EXISTS disc_source_idx        ON discovery_candidates (source);
+    CREATE INDEX IF NOT EXISTS disc_slug_idx          ON discovery_candidates (tenant_id, suggested_slug);
+  `);
+
   console.log("DB connected and schema ready");
 }

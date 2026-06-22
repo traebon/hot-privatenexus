@@ -534,6 +534,20 @@ function PrivateNexusDashboard({ authUser }) {
   const [maintenanceReason, setMaintenanceReason] = useState("");
   const [maintenanceDuration, setMaintenanceDuration] = useState("1h");
 
+  // Discovery board
+  const [discCandidates, setDiscCandidates]   = useState([]);
+  const [discSummary, setDiscSummary]         = useState({});
+  const [discLoading, setDiscLoading]         = useState(false);
+  const [discError, setDiscError]             = useState(null);
+  const [discStatusFilter, setDiscStatusFilter] = useState("pending");
+  const [discScanning, setDiscScanning]       = useState(false);
+  const [discScanResult, setDiscScanResult]   = useState(null);
+  const [discDrift, setDiscDrift]             = useState(null);
+  const [discDriftLoading, setDiscDriftLoading] = useState(false);
+  const [discEditId, setDiscEditId]           = useState(null);
+  const [discEditForm, setDiscEditForm]       = useState({});
+  const [discActionPending, setDiscActionPending] = useState(null);
+
   // Admin panel — certs / disk / users / backup run
   const [certData, setCertData] = useState(null);
   const [certError, setCertError] = useState(false);
@@ -794,6 +808,12 @@ function PrivateNexusDashboard({ authUser }) {
     const id = setInterval(runLogsQuery, 15000);
     return () => clearInterval(id);
   }, [logsAutoRefresh, logsSource, logsSourceType, logsRange, logsLevel, logsSearch]);
+
+  // Discovery — load candidates when board becomes active
+  useEffect(() => {
+    if (activeBoard !== "Discovery") return;
+    loadDiscCandidates(discStatusFilter);
+  }, [activeBoard]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Activity feed — initial load when board becomes active or filters change
   useEffect(() => {
@@ -1562,7 +1582,7 @@ function PrivateNexusDashboard({ authUser }) {
         level: a.level === "critical" ? "critical" : a.level === "warning" ? "warning" : "info",
       }));
 
-  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "DNS", "Catalogue", "Inventory", "Alerts", "Logs", "Activity", "Emergency"];
+  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "DNS", "Catalogue", "Inventory", "Alerts", "Logs", "Activity", "Discovery", "Emergency"];
 
   const boardThemes = {
     Home:      { active: "from-cyan-400 to-blue-500",     ring: "border-cyan-400/30",     hover: "hover:border-cyan-400/30",     shell: "from-cyan-500/10 to-blue-500/5" },
@@ -1576,6 +1596,7 @@ function PrivateNexusDashboard({ authUser }) {
     DNS:       { active: "from-emerald-400 to-teal-500",   ring: "border-emerald-400/30",  hover: "hover:border-emerald-400/30",  shell: "from-emerald-500/10 to-teal-500/5" },
     Catalogue: { active: "from-violet-400 to-purple-500",  ring: "border-violet-400/30",   hover: "hover:border-violet-400/30",   shell: "from-violet-500/10 to-purple-500/5" },
     Activity:  { active: "from-sky-400 to-indigo-500",    ring: "border-sky-400/30",      hover: "hover:border-sky-400/30",      shell: "from-sky-500/10 to-indigo-500/5" },
+    Discovery: { active: "from-teal-400 to-cyan-500",     ring: "border-teal-400/30",     hover: "hover:border-teal-400/30",     shell: "from-teal-500/10 to-cyan-500/5" },
     Emergency: { active: "from-rose-400 to-pink-500",     ring: "border-rose-400/30",     hover: "hover:border-rose-400/30",     shell: "from-rose-500/10 to-pink-500/5" },
   };
 
@@ -3777,6 +3798,280 @@ function PrivateNexusDashboard({ authUser }) {
     info:     "border-sky-400/20 bg-sky-500/5 text-sky-400/70",
   };
 
+  // ── Discovery helpers ──────────────────────────────────────────────────────
+  const loadDiscCandidates = async (status = discStatusFilter) => {
+    setDiscLoading(true); setDiscError(null);
+    try {
+      const r = await fetch(`/api/discovery/candidates?status=${encodeURIComponent(status)}`, { credentials: "include" });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error);
+      setDiscCandidates(d.candidates); setDiscSummary(d.summary || {});
+    } catch (e) { setDiscError(e.message); }
+    finally { setDiscLoading(false); }
+  };
+
+  const runDiscScan = async (sources) => {
+    setDiscScanning(true); setDiscScanResult(null);
+    try {
+      const r = await fetch("/api/discovery/scan", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sources }),
+      });
+      const d = await r.json();
+      setDiscScanResult(d);
+      await loadDiscCandidates("pending");
+    } catch (e) { setDiscScanResult({ ok: false, error: e.message }); }
+    finally { setDiscScanning(false); }
+  };
+
+  const discAction = async (id, action, extra = {}) => {
+    setDiscActionPending(id + ":" + action);
+    try {
+      const r = await fetch(`/api/discovery/candidates/${id}`, {
+        method: "PATCH", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ...extra }),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error);
+      await loadDiscCandidates(discStatusFilter);
+    } catch (e) { alert(e.message); }
+    finally { setDiscActionPending(null); }
+  };
+
+  const loadDiscDrift = async () => {
+    setDiscDriftLoading(true);
+    try {
+      const r = await fetch("/api/discovery/drift", { credentials: "include" });
+      const d = await r.json();
+      setDiscDrift(d);
+    } catch (e) { setDiscDrift({ ok: false, error: e.message }); }
+    finally { setDiscDriftLoading(false); }
+  };
+
+  const completenessBar = (score) => {
+    const colour = score >= 80 ? "bg-emerald-500" : score >= 50 ? "bg-amber-500" : "bg-rose-500";
+    return (
+      <div className="flex items-center gap-2">
+        <div className="h-1.5 w-16 overflow-hidden rounded-full bg-neutral-700">
+          <div className={`h-full rounded-full ${colour}`} style={{ width: `${score}%` }} />
+        </div>
+        <span className="text-[10px] text-neutral-400">{score}%</span>
+      </div>
+    );
+  };
+
+  const discoveryBoard = (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="rounded-2xl border border-teal-400/30 bg-gradient-to-r from-teal-500/15 via-cyan-500/10 to-emerald-500/10 p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Discovery</h2>
+            <p className="mt-0.5 text-sm text-neutral-400">
+              Scan running infrastructure and approve candidates into the service registry.
+            </p>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <button
+              onClick={() => { setDiscStatusFilter("pending"); loadDiscCandidates("pending"); }}
+              className="rounded-lg border border-teal-400/30 bg-teal-500/10 px-3 py-1.5 text-xs font-medium text-teal-300 hover:bg-teal-500/20">
+              Refresh
+            </button>
+            <button
+              disabled={discScanning}
+              onClick={() => runDiscScan(["local_docker"])}
+              className="rounded-lg border border-cyan-400/40 bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-50">
+              {discScanning ? "Scanning…" : "Scan Docker"}
+            </button>
+          </div>
+        </div>
+
+        {/* Summary pills */}
+        <div className="mt-3 flex flex-wrap gap-2">
+          {[["pending","amber"],["approved","emerald"],["merged","sky"],["rejected","neutral"]].map(([s, col]) => (
+            <button key={s}
+              onClick={() => { setDiscStatusFilter(s); loadDiscCandidates(s); }}
+              className={[
+                "rounded-full border px-3 py-0.5 text-xs font-medium capitalize transition-colors",
+                discStatusFilter === s
+                  ? `border-${col}-400/50 bg-${col}-500/20 text-${col}-300`
+                  : "border-neutral-700 bg-neutral-800/50 text-neutral-400 hover:text-white",
+              ].join(" ")}>
+              {s} {discSummary[s] != null ? `(${discSummary[s]})` : ""}
+            </button>
+          ))}
+        </div>
+
+        {discScanResult && (
+          <div className={["mt-3 rounded-lg border px-3 py-2 text-xs",
+            discScanResult.ok
+              ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-300"
+              : "border-rose-400/30 bg-rose-500/10 text-rose-300"].join(" ")}>
+            {discScanResult.ok
+              ? `Scan complete — ${discScanResult.inserted} new candidates, ${discScanResult.skipped} skipped${discScanResult.errors?.length ? `, ${discScanResult.errors.length} errors` : ""}`
+              : `Scan error: ${discScanResult.error}`}
+          </div>
+        )}
+      </div>
+
+      {/* Candidates table */}
+      <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 overflow-hidden">
+        <div className="border-b border-neutral-800 px-4 py-3 flex items-center justify-between">
+          <span className="text-sm font-medium text-white capitalize">{discStatusFilter} candidates</span>
+          <span className="text-xs text-neutral-500">{discCandidates.length} shown</span>
+        </div>
+
+        {discLoading ? (
+          <div className="px-4 py-10 text-center text-sm text-neutral-500">Loading…</div>
+        ) : discError ? (
+          <div className="px-4 py-6 text-center text-sm text-rose-400">{discError}</div>
+        ) : discCandidates.length === 0 ? (
+          <div className="px-4 py-10 text-center text-sm text-neutral-500">
+            {discStatusFilter === "pending"
+              ? "No pending candidates — run a scan to discover services."
+              : `No ${discStatusFilter} candidates.`}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-neutral-800 text-left text-neutral-500">
+                  <th className="px-4 py-2.5 font-medium">Name / Slug</th>
+                  <th className="px-3 py-2.5 font-medium">Source</th>
+                  <th className="px-3 py-2.5 font-medium">Image / Type</th>
+                  <th className="px-3 py-2.5 font-medium">Category</th>
+                  <th className="px-3 py-2.5 font-medium">Health EP</th>
+                  <th className="px-3 py-2.5 font-medium">Completeness</th>
+                  {discStatusFilter === "pending" && (
+                    <th className="px-3 py-2.5 font-medium text-right">Actions</th>
+                  )}
+                  {discStatusFilter === "merged" && (
+                    <th className="px-3 py-2.5 font-medium">Reviewed</th>
+                  )}
+                  {discStatusFilter === "rejected" && (
+                    <th className="px-3 py-2.5 font-medium">Reason</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-800/50">
+                {discCandidates.map((c) => (
+                  <tr key={c.id} className="hover:bg-neutral-800/40 transition-colors">
+                    <td className="px-4 py-2.5">
+                      <div className="font-medium text-neutral-200">{c.suggested_name || c.raw_name}</div>
+                      <div className="font-mono text-[10px] text-neutral-500">{c.suggested_slug}</div>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span className="rounded border border-teal-400/20 bg-teal-500/10 px-1.5 py-0.5 text-[10px] text-teal-300">
+                        {c.source}
+                      </span>
+                      {c.host && <div className="mt-0.5 text-[10px] text-neutral-600">{c.host}</div>}
+                    </td>
+                    <td className="px-3 py-2.5 max-w-[130px]">
+                      <div className="truncate text-neutral-400" title={c.raw_image}>{c.raw_image || "—"}</div>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span className="rounded border border-neutral-700 bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-300">
+                        {c.suggested_category || "—"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 max-w-[160px]">
+                      {c.suggested_health_ep
+                        ? <span className="truncate font-mono text-[10px] text-sky-400" title={c.suggested_health_ep}>{c.suggested_health_ep}</span>
+                        : <span className="text-neutral-600">—</span>}
+                    </td>
+                    <td className="px-3 py-2.5">{completenessBar(c.completeness_score)}</td>
+
+                    {discStatusFilter === "pending" && (
+                      <td className="px-3 py-2.5 text-right">
+                        <div className="flex justify-end gap-1">
+                          <button
+                            disabled={discActionPending === c.id + ":approve"}
+                            onClick={() => discAction(c.id, "approve")}
+                            className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-40">
+                            {discActionPending === c.id + ":approve" ? "…" : "Approve"}
+                          </button>
+                          <button
+                            disabled={discActionPending === c.id + ":reject"}
+                            onClick={() => discAction(c.id, "reject", { reject_reason: "Manually rejected" })}
+                            className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-300 hover:bg-rose-500/20 disabled:opacity-40">
+                            {discActionPending === c.id + ":reject" ? "…" : "Reject"}
+                          </button>
+                        </div>
+                      </td>
+                    )}
+                    {discStatusFilter === "merged" && (
+                      <td className="px-3 py-2.5 text-[10px] text-neutral-500">
+                        {c.reviewed_by} · {c.reviewed_at ? new Date(c.reviewed_at).toLocaleDateString() : "—"}
+                      </td>
+                    )}
+                    {discStatusFilter === "rejected" && (
+                      <td className="px-3 py-2.5 text-[10px] text-neutral-500">{c.reject_reason || "—"}</td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Drift detection */}
+      <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 overflow-hidden">
+        <div className="border-b border-neutral-800 px-4 py-3 flex items-center justify-between">
+          <div>
+            <span className="text-sm font-medium text-white">Registry Drift</span>
+            <p className="text-xs text-neutral-500 mt-0.5">Docker services in the registry not seen in the last scan</p>
+          </div>
+          <button
+            disabled={discDriftLoading}
+            onClick={loadDiscDrift}
+            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-400 hover:text-white disabled:opacity-40">
+            {discDriftLoading ? "Checking…" : "Check Drift"}
+          </button>
+        </div>
+
+        {!discDrift ? (
+          <div className="px-4 py-8 text-center text-sm text-neutral-600">Run a scan first, then check drift.</div>
+        ) : !discDrift.ok ? (
+          <div className="px-4 py-6 text-center text-sm text-rose-400">{discDrift.error}</div>
+        ) : discDrift.drift?.length === 0 ? (
+          <div className="px-4 py-8 text-center text-sm text-emerald-400">No drift detected — all registered Docker services were seen in the last scan.</div>
+        ) : (
+          <div className="divide-y divide-neutral-800/50">
+            {discDrift.drift.map((s) => (
+              <div key={s.id} className="flex items-center justify-between px-4 py-3">
+                <div>
+                  <span className="text-sm font-medium text-amber-300">{s.name}</span>
+                  <span className="ml-2 font-mono text-xs text-neutral-500">{s.slug}</span>
+                </div>
+                <span className="rounded border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-300">
+                  not found in last scan
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Agent instructions */}
+      <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-4">
+        <h3 className="text-sm font-medium text-white mb-2">Remote Agent</h3>
+        <p className="text-xs text-neutral-400 mb-3">
+          Run the Docker agent on any host to push container candidates to PrivateNexus.
+          Requires <code className="rounded bg-neutral-800 px-1 text-teal-300">DISCOVERY_AGENT_TOKEN</code> set in compose env.
+        </p>
+        <pre className="overflow-x-auto rounded-lg bg-neutral-800 p-3 text-[10px] text-neutral-300 leading-relaxed">{`PRIVATENEXUS_URL=https://privatenexus.net \\
+DISCOVERY_AGENT_TOKEN=your-token \\
+bash /opt/privatenexus/agents/docker-agent.sh`}</pre>
+        <p className="mt-2 text-[10px] text-neutral-600">
+          Add <code className="text-teal-400/70">pn.*</code> Docker labels to containers to improve completeness scores.
+        </p>
+      </div>
+    </div>
+  );
+
   const activityBoard = (
     <div className="space-y-4">
       {/* Header */}
@@ -5173,6 +5468,9 @@ function PrivateNexusDashboard({ authUser }) {
 
           {/* Activity feed */}
           {activeBoard === "Activity" && activityBoard}
+
+          {/* Discovery */}
+          {activeBoard === "Discovery" && discoveryBoard}
 
           {/* Emergency */}
           {activeBoard === "Emergency" && (

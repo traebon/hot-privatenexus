@@ -18,7 +18,8 @@ import { servicesRouter } from "./routes/services.js";
 import { opsRouter }     from "./routes/ops.js";
 import { catalogueRouter } from "./routes/catalogue.js";
 import { dnsRouter } from "./routes/dns.js";
-import { activityRouter } from "./routes/activity.js";
+import { activityRouter }   from "./routes/activity.js";
+import { discoveryRouter }  from "./routes/discovery.js";
 import { requireAuth }   from "./middleware/requireAuth.js";
 import { requireRole }   from "./middleware/requireRole.js";
 import { initDb }        from "./db.js";
@@ -67,7 +68,7 @@ app.use(
 
 // Public routes — no auth required
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, service: "privatenexus-backend", version: "1.16.0" })
+  res.json({ ok: true, service: "privatenexus-backend", version: "1.17.0" })
 );
 app.use("/api/auth", authRouter);
 
@@ -86,6 +87,7 @@ app.use("/api/services", servicesRouter);
 app.use("/api/ops",       opsRouter);
 app.use("/api/catalogue", catalogueRouter);
 app.use("/api/dns", dnsRouter);
-app.use("/api/activity", activityRouter);
+app.use("/api/activity",   activityRouter);
+app.use("/api/discovery",  discoveryRouter);
 
 app.listen(port, () => console.log(`PrivateNexus backend listening on ${port}`));
