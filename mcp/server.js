@@ -1,15 +1,17 @@
 #!/usr/bin/env node
-// PrivateNexus MCP Server — read-only tools for JARVIS/Claude Code
-// Runs as HTTP server; tools query PostgreSQL directly (read-only connection)
+// PrivateNexus MCP Server v3 — read + write tools for JARVIS/Claude Code
+// Read tools: direct PostgreSQL queries
+// Write tools: call backend HTTP API with X-MCP-Internal auth header
 import { readFileSync } from "fs";
 import http from "node:http";
 import pg from "pg";
 
 const { Pool } = pg;
 
-const PORT  = Number(process.env.MCP_PORT || 3002);
-const TOKEN = readSecret("/run/secrets/mcp_token") ?? process.env.MCP_TOKEN;
+const PORT      = Number(process.env.MCP_PORT    || 3002);
+const TOKEN     = readSecret("/run/secrets/mcp_token") ?? process.env.MCP_TOKEN;
 const TENANT_ID = "10000000-0000-0000-0000-000000000001";
+const BACKEND   = process.env.BACKEND_URL || "http://privatenexus-backend:3001";
 
 function readSecret(path) {
   try { return readFileSync(path, "utf8").trim(); } catch { return null; }
@@ -24,8 +26,29 @@ const pool = new Pool({
   max: 3,
 });
 
+// ── Backend API caller ────────────────────────────────────────────────────────
+async function backendCall(method, path, body = null) {
+  const url = `${BACKEND}${path}`;
+  const opts = {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "X-MCP-Internal": TOKEN || "",
+    },
+    signal: AbortSignal.timeout(30_000),
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(url, opts);
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  if (!res.ok) throw new Error(`Backend ${method} ${path} → ${res.status}: ${JSON.stringify(data)}`);
+  return data;
+}
+
 // ── Tool definitions ─────────────────────────────────────────────────────────
 const TOOLS = [
+  // ── Read tools (v2 — unchanged) ───────────────────────────────────────────
   {
     name: "pn_summary",
     description: "Overall PrivateNexus health summary: service counts by status, recent incidents, pending discovery candidates.",
@@ -48,9 +71,7 @@ const TOOLS = [
     description: "Get full details for a single service including recent health history and backup records.",
     inputSchema: {
       type: "object",
-      properties: {
-        slug: { type: "string", description: "Service slug" },
-      },
+      properties: { slug: { type: "string", description: "Service slug" } },
       required: ["slug"],
     },
   },
@@ -59,9 +80,7 @@ const TOOLS = [
     description: "Given a service slug, return all services that would be affected if it went down, with dependency types (hard/soft) and depth.",
     inputSchema: {
       type: "object",
-      properties: {
-        slug: { type: "string", description: "Service slug to analyse" },
-      },
+      properties: { slug: { type: "string", description: "Service slug to analyse" } },
       required: ["slug"],
     },
   },
@@ -70,9 +89,7 @@ const TOOLS = [
     description: "Given a service slug, return the ordered list of services that must be restored first (dependencies before dependents).",
     inputSchema: {
       type: "object",
-      properties: {
-        slug: { type: "string", description: "Service slug to restore" },
-      },
+      properties: { slug: { type: "string", description: "Service slug to restore" } },
       required: ["slug"],
     },
   },
@@ -115,9 +132,75 @@ const TOOLS = [
     description: "List pending Discovery candidates awaiting review.",
     inputSchema: {
       type: "object",
+      properties: { limit: { type: "number", description: "Max results (default 20)" } },
+    },
+  },
+  // ── Write / action tools (v3 — new) ──────────────────────────────────────
+  {
+    name: "pn_list_signals",
+    description: "List active intelligence signals — anomalies detected by the autonomous scanner (down spikes, degradation, latency, flapping).",
+    inputSchema: {
+      type: "object",
       properties: {
-        limit: { type: "number", description: "Max results (default 20)" },
+        hours: { type: "number", description: "Look-back window in hours (default 24, max 168)" },
       },
+    },
+  },
+  {
+    name: "pn_approve_proposal",
+    description: "Approve and immediately execute a pending remediation proposal (e.g. restart a container). Requires operator role.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        proposal_id: { type: "string", description: "UUID of the remediation proposal to approve" },
+      },
+      required: ["proposal_id"],
+    },
+  },
+  {
+    name: "pn_refresh_health",
+    description: "Trigger an immediate health probe on a service by slug. Updates service status and writes a health event.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string", description: "Service slug to probe" },
+      },
+      required: ["slug"],
+    },
+  },
+  {
+    name: "pn_restart_service",
+    description: "Restart the Docker container associated with a service. The service must have container_name set. Creates a change record.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string", description: "Service slug to restart" },
+      },
+      required: ["slug"],
+    },
+  },
+  {
+    name: "pn_run_simulation",
+    description: "Run a recovery simulation for a service or the full estate. Returns RTO estimates, blockers, and restore order.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_type: { type: "string", description: "service | category | estate" },
+        target_slug: { type: "string", description: "Service slug (required when target_type=service)" },
+        scenario:    { type: "string", description: "Scenario type: full_loss | partial | data_corruption | network_failure (default: full_loss)" },
+      },
+      required: ["target_type"],
+    },
+  },
+  {
+    name: "pn_get_playbook",
+    description: "Generate a step-by-step recovery playbook for a service. Returns ordered instructions including backup source, runbook URL, and health check steps.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string", description: "Service slug" },
+      },
+      required: ["slug"],
     },
   },
 ];
@@ -127,30 +210,33 @@ async function callTool(name, args) {
   switch (name) {
 
     case "pn_summary": {
-      const [svcs, activity, disc] = await Promise.all([
+      const [svcs, activity, disc, signals] = await Promise.all([
         pool.query("SELECT status, COUNT(*)::int n FROM services WHERE tenant_id=$1 AND archived=FALSE GROUP BY status", [TENANT_ID]),
         pool.query("SELECT action, outcome, ts FROM audit_log WHERE tenant_id=$1 ORDER BY ts DESC LIMIT 5", [TENANT_ID]),
         pool.query("SELECT COUNT(*)::int n FROM discovery_candidates WHERE tenant_id=$1 AND status='pending'", [TENANT_ID]),
+        pool.query("SELECT COUNT(*)::int n FROM intelligence_signals WHERE tenant_id=$1 AND resolved_at IS NULL AND fired_at > NOW() - INTERVAL '24 hours'", [TENANT_ID])
+          .catch(() => ({ rows: [{ n: 0 }] })), // graceful if table doesn't exist yet
       ]);
       const statusMap = Object.fromEntries(svcs.rows.map(r => [r.status, r.n]));
       return {
         service_counts: statusMap,
         total_services: Object.values(statusMap).reduce((a, b) => a + b, 0),
         pending_discovery: disc.rows[0].n,
+        open_signals: signals.rows[0].n,
         recent_activity: activity.rows,
       };
     }
 
     case "pn_list_services": {
       const { status, workspace, category } = args;
-      const params = [TENANT_ID];
+      const params  = [TENANT_ID];
       const clauses = ["s.tenant_id = $1", "s.archived = FALSE"];
       if (status)    { params.push(status);    clauses.push(`s.status = $${params.length}`); }
       if (category)  { params.push(category);  clauses.push(`s.category = $${params.length}`); }
       if (workspace) { params.push(workspace); clauses.push(`w.slug = $${params.length}`); }
       const { rows } = await pool.query(
         `SELECT s.name, s.slug, s.status, s.category, s.access_mode, s.runtime_type,
-                s.backup_policy, s.health_endpoint, s.updated_at,
+                s.backup_policy, s.health_endpoint, s.container_name, s.updated_at,
                 w.name AS workspace
          FROM services s LEFT JOIN workspaces w ON w.id = s.workspace_id
          WHERE ${clauses.join(" AND ")}
@@ -197,8 +283,7 @@ async function callTool(name, args) {
         "SELECT id, name, slug FROM services WHERE tenant_id=$1 AND slug=$2", [TENANT_ID, slug]
       );
       if (!svcs[0]) return { error: `Service '${slug}' not found` };
-      const id = svcs[0].id;
-
+      const id      = svcs[0].id;
       const visited = new Set([id]);
       const queue   = [{ id, depth: 0 }];
       const affected = [];
@@ -234,9 +319,8 @@ async function callTool(name, args) {
         "SELECT id, name, slug FROM services WHERE tenant_id=$1 AND slug=$2", [TENANT_ID, slug]
       );
       if (!svcs[0]) return { error: `Service '${slug}' not found` };
-      const id = svcs[0].id;
-
-      const seen  = new Set([id]);
+      const id   = svcs[0].id;
+      const seen = new Set([id]);
       const queue = [{ id, depth: 0 }];
       const chain = [];
       while (queue.length) {
@@ -281,12 +365,10 @@ async function callTool(name, args) {
           "SELECT id FROM services WHERE tenant_id=$1 AND slug=$2", [TENANT_ID, slug]
         );
         if (!svcs[0]) return { error: `Service '${slug}' not found` };
-        q = `SELECT sb.*, s.name, s.slug FROM service_backups sb JOIN services s ON s.id=sb.service_id
-             WHERE sb.service_id=$1 ORDER BY sb.taken_at DESC LIMIT $2`;
+        q      = `SELECT sb.*, s.name, s.slug FROM service_backups sb JOIN services s ON s.id=sb.service_id WHERE sb.service_id=$1 ORDER BY sb.taken_at DESC LIMIT $2`;
         params = [svcs[0].id, Math.min(Number(limit), 100)];
       } else {
-        q = `SELECT sb.*, s.name, s.slug FROM service_backups sb JOIN services s ON s.id=sb.service_id
-             WHERE sb.tenant_id=$1 ORDER BY sb.taken_at DESC LIMIT $2`;
+        q      = `SELECT sb.*, s.name, s.slug FROM service_backups sb JOIN services s ON s.id=sb.service_id WHERE sb.tenant_id=$1 ORDER BY sb.taken_at DESC LIMIT $2`;
         params = [TENANT_ID, Math.min(Number(limit), 100)];
       }
       const { rows } = await pool.query(q, params);
@@ -318,13 +400,73 @@ async function callTool(name, args) {
       return { candidates: rows, count: rows.length };
     }
 
+    // ── v3 write tools ────────────────────────────────────────────────────────
+
+    case "pn_list_signals": {
+      const { hours = 24 } = args;
+      return backendCall("GET", `/api/intelligence/signals?hours=${Math.min(Number(hours), 168)}`);
+    }
+
+    case "pn_approve_proposal": {
+      const { proposal_id } = args;
+      if (!proposal_id) return { error: "proposal_id is required" };
+      return backendCall("POST", `/api/intelligence/proposals/${proposal_id}/approve`);
+    }
+
+    case "pn_refresh_health": {
+      const { slug } = args;
+      if (!slug) return { error: "slug is required" };
+      const { rows: svcs } = await pool.query(
+        "SELECT id FROM services WHERE tenant_id=$1 AND slug=$2", [TENANT_ID, slug]
+      );
+      if (!svcs[0]) return { error: `Service '${slug}' not found` };
+      return backendCall("POST", `/api/intelligence/service/${svcs[0].id}/probe`);
+    }
+
+    case "pn_restart_service": {
+      const { slug } = args;
+      if (!slug) return { error: "slug is required" };
+      const { rows: svcs } = await pool.query(
+        "SELECT id, container_name FROM services WHERE tenant_id=$1 AND slug=$2", [TENANT_ID, slug]
+      );
+      if (!svcs[0]) return { error: `Service '${slug}' not found` };
+      if (!svcs[0].container_name) return { error: `Service '${slug}' has no container_name set` };
+      return backendCall("POST", `/api/intelligence/service/${svcs[0].id}/restart`);
+    }
+
+    case "pn_run_simulation": {
+      const { target_type, target_slug, scenario = "full_loss" } = args;
+      if (!target_type) return { error: "target_type is required" };
+      let target_id = null, target_name = null;
+      if (target_slug) {
+        const { rows: svcs } = await pool.query(
+          "SELECT id, name FROM services WHERE tenant_id=$1 AND slug=$2", [TENANT_ID, target_slug]
+        );
+        if (!svcs[0]) return { error: `Service '${target_slug}' not found` };
+        target_id   = svcs[0].id;
+        target_name = svcs[0].name;
+      }
+      return backendCall("POST", "/api/recovery/simulate", {
+        scenario_type: scenario, target_type, target_id, target_name,
+      });
+    }
+
+    case "pn_get_playbook": {
+      const { slug } = args;
+      if (!slug) return { error: "slug is required" };
+      const { rows: svcs } = await pool.query(
+        "SELECT id FROM services WHERE tenant_id=$1 AND slug=$2", [TENANT_ID, slug]
+      );
+      if (!svcs[0]) return { error: `Service '${slug}' not found` };
+      return backendCall("POST", "/api/recovery/playbook", { service_id: svcs[0].id });
+    }
+
     default:
       return { error: `Unknown tool: ${name}` };
   }
 }
 
 // ── MCP HTTP server ──────────────────────────────────────────────────────────
-// Implements a minimal subset of MCP over HTTP (JSON-RPC 2.0)
 function jsonResp(res, body, status = 200) {
   const data = JSON.stringify(body);
   res.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) });
@@ -339,7 +481,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "GET" && req.url === "/health") {
-    return jsonResp(res, { ok: true, service: "privatenexus-mcp", tools: TOOLS.length });
+    return jsonResp(res, { ok: true, service: "privatenexus-mcp", version: "3.0.0", tools: TOOLS.length });
   }
 
   if (req.method !== "POST" || req.url !== "/mcp") {
@@ -362,7 +504,7 @@ const server = http.createServer(async (req, res) => {
         result: {
           protocolVersion: "2024-11-05",
           capabilities: { tools: {} },
-          serverInfo: { name: "privatenexus", version: "2.0.0" },
+          serverInfo: { name: "privatenexus", version: "3.0.0" },
         },
       });
     }
@@ -392,5 +534,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`PrivateNexus MCP server listening on ${PORT} — ${TOOLS.length} tools`);
+  console.log(`PrivateNexus MCP server v3 listening on ${PORT} — ${TOOLS.length} tools (${TOOLS.filter(t => ["pn_list_signals","pn_approve_proposal","pn_refresh_health","pn_restart_service","pn_run_simulation","pn_get_playbook"].includes(t.name)).length} write)`);
 });

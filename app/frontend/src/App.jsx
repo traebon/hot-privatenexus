@@ -612,6 +612,21 @@ function PrivateNexusDashboard({ authUser }) {
   const [deployError, setDeployError]           = useState(null);
   const [rollbackPoints, setRollbackPoints]     = useState({});
 
+  // Intelligence board
+  const [intelTab, setIntelTab]                       = useState("signals");
+  const [intelSignals, setIntelSignals]               = useState(null);
+  const [intelSignalsLoading, setIntelSignalsLoading] = useState(false);
+  const [intelProposals, setIntelProposals]           = useState(null);
+  const [intelProposalsLoading, setIntelProposalsLoading] = useState(false);
+  const [intelPropFilter, setIntelPropFilter]         = useState("pending");
+  const [intelPolicies, setIntelPolicies]             = useState(null);
+  const [intelPoliciesLoading, setIntelPoliciesLoading] = useState(false);
+  const [intelScanRunning, setIntelScanRunning]       = useState(false);
+  const [intelScanResult, setIntelScanResult]         = useState(null);
+  const [intelApproving, setIntelApproving]           = useState(null); // proposal id
+  const [intelDismissing, setIntelDismissing]         = useState(null); // proposal id
+  const [intelTogglingPolicy, setIntelTogglingPolicy] = useState(null); // policy id
+
   // Discovery board
   const [discCandidates, setDiscCandidates]   = useState([]);
   const [discSummary, setDiscSummary]         = useState({});
@@ -937,6 +952,36 @@ function PrivateNexusDashboard({ authUser }) {
       if (recSimServices.length === 0) fetch(`${API_BASE}/api/services`).then(r=>r.json()).then(d=>{ if(Array.isArray(d)) setRecSimServices(d); }).catch(()=>{});
     }
   }, [activeBoard, recTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+
+  // Intelligence — load data when board or tab changes
+  useEffect(() => {
+    if (activeBoard !== "Intelligence") return;
+    if (intelTab === "signals" && !intelSignals) {
+      setIntelSignalsLoading(true);
+      fetch(`${API_BASE}/api/intelligence/signals?hours=24`)
+        .then(r => r.json())
+        .then(d => { if (d.ok) setIntelSignals(d); })
+        .catch(() => {})
+        .finally(() => setIntelSignalsLoading(false));
+    }
+    if (intelTab === "proposals" && !intelProposals) {
+      setIntelProposalsLoading(true);
+      fetch(`${API_BASE}/api/intelligence/proposals?status=${intelPropFilter}`)
+        .then(r => r.json())
+        .then(d => { if (d.ok) setIntelProposals(d); })
+        .catch(() => {})
+        .finally(() => setIntelProposalsLoading(false));
+    }
+    if (intelTab === "autonomous" && !intelPolicies) {
+      setIntelPoliciesLoading(true);
+      fetch(`${API_BASE}/api/intelligence/autonomous`)
+        .then(r => r.json())
+        .then(d => { if (d.ok) setIntelPolicies(d); })
+        .catch(() => {})
+        .finally(() => setIntelPoliciesLoading(false));
+    }
+  }, [activeBoard, intelTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Dependencies — load graph when board becomes active
   useEffect(() => {
@@ -1722,7 +1767,7 @@ function PrivateNexusDashboard({ authUser }) {
         level: a.level === "critical" ? "critical" : a.level === "warning" ? "warning" : "info",
       }));
 
-  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "DNS", "Catalogue", "Inventory", "Alerts", "Logs", "Activity", "Discovery", "Dependencies", "Governance", "Recovery", "Emergency"];
+  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "DNS", "Catalogue", "Inventory", "Alerts", "Logs", "Activity", "Discovery", "Dependencies", "Governance", "Recovery", "Intelligence", "Emergency"];
 
   const boardThemes = {
     Home:      { active: "from-cyan-400 to-blue-500",     ring: "border-cyan-400/30",     hover: "hover:border-cyan-400/30",     shell: "from-cyan-500/10 to-blue-500/5" },
@@ -1740,6 +1785,7 @@ function PrivateNexusDashboard({ authUser }) {
     Dependencies: { active: "from-violet-400 to-fuchsia-500", ring: "border-violet-400/30",  hover: "hover:border-violet-400/30",  shell: "from-violet-500/10 to-fuchsia-500/5" },
     Governance:   { active: "from-amber-400 to-yellow-500",  ring: "border-amber-400/30",   hover: "hover:border-amber-400/30",   shell: "from-amber-500/10 to-yellow-500/5" },
     Recovery:  { active: "from-emerald-400 to-teal-500",  ring: "border-emerald-400/30",  hover: "hover:border-emerald-400/30",  shell: "from-emerald-500/10 to-teal-500/5" },
+    Intelligence: { active: "from-sky-400 to-violet-500",   ring: "border-sky-400/30",   hover: "hover:border-sky-400/30",   shell: "from-sky-500/10 to-violet-500/5" },
     Emergency: { active: "from-rose-400 to-pink-500",     ring: "border-rose-400/30",     hover: "hover:border-rose-400/30",     shell: "from-rose-500/10 to-pink-500/5" },
   };
 
@@ -7178,6 +7224,275 @@ function PrivateNexusDashboard({ authUser }) {
                         </div>
                       </div>
                     )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {activeBoard === "Intelligence" && (() => {
+            const SIG_STYLES = {
+              critical: "border-rose-400/30 bg-rose-500/10 text-rose-300",
+              warning:  "border-amber-400/30 bg-amber-500/10 text-amber-300",
+              info:     "border-sky-400/30 bg-sky-500/10 text-sky-300",
+            };
+            const SIG_LABELS = { down_spike: "Down Spike", degrading: "Degrading", latency_spike: "Latency Spike", intermittent: "Intermittent" };
+
+            const runScan = async () => {
+              setIntelScanRunning(true); setIntelScanResult(null);
+              try {
+                const r = await fetch(`${API_BASE}/api/intelligence/scan`, { method: "POST" });
+                const d = await r.json();
+                setIntelScanResult(d);
+                // Refresh signals after scan
+                setIntelSignals(null);
+                fetch(`${API_BASE}/api/intelligence/signals?hours=24`)
+                  .then(r2 => r2.json()).then(d2 => { if (d2.ok) setIntelSignals(d2); }).catch(() => {});
+              } catch { setIntelScanResult({ ok: false, error: "Request failed" }); }
+              finally { setIntelScanRunning(false); }
+            };
+
+            const approveProposal = async (id) => {
+              setIntelApproving(id);
+              try {
+                const r = await fetch(`${API_BASE}/api/intelligence/proposals/${id}/approve`, { method: "POST" });
+                const d = await r.json();
+                setIntelProposals(null); // force reload
+              } catch {}
+              finally { setIntelApproving(null); }
+            };
+
+            const dismissProposal = async (id) => {
+              setIntelDismissing(id);
+              try {
+                await fetch(`${API_BASE}/api/intelligence/proposals/${id}/dismiss`, { method: "POST" });
+                setIntelProposals(null);
+              } catch {}
+              finally { setIntelDismissing(null); }
+            };
+
+            const togglePolicy = async (policy) => {
+              setIntelTogglingPolicy(policy.id);
+              try {
+                const r = await fetch(`${API_BASE}/api/intelligence/autonomous/${policy.id}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ enabled: !policy.enabled }),
+                });
+                const d = await r.json();
+                if (d.ok) setIntelPolicies(prev => prev ? { ...prev, policies: prev.policies.map(p => p.id === policy.id ? d.policy : p) } : null);
+              } catch {}
+              finally { setIntelTogglingPolicy(null); }
+            };
+
+            return (
+              <div className="space-y-4">
+                {/* Header */}
+                <div className="rounded-2xl border border-sky-400/30 bg-gradient-to-r from-sky-500/15 via-violet-500/10 to-indigo-500/10 p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs uppercase tracking-wider text-sky-300/80">Autonomous Operations</div>
+                      <div className="text-lg font-semibold">Intelligence Engine</div>
+                      <div className="mt-1 text-xs text-neutral-400">Signal detection · Remediation proposals · Autonomous execution</div>
+                    </div>
+                    <button
+                      onClick={runScan}
+                      disabled={intelScanRunning}
+                      className="rounded-lg border border-sky-400/20 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-sky-500/20 disabled:opacity-50"
+                    >
+                      {intelScanRunning ? "Scanning…" : "Run Scan"}
+                    </button>
+                  </div>
+                  {intelScanResult && (
+                    <div className={`mt-3 rounded-lg border px-3 py-2 text-xs ${intelScanResult.ok ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-300" : "border-rose-400/30 bg-rose-500/10 text-rose-300"}`}>
+                      {intelScanResult.ok
+                        ? `Scan complete — ${intelScanResult.new_signals} new signal(s), ${intelScanResult.new_proposals} proposal(s), ${intelScanResult.executed} auto-executed`
+                        : `Scan failed: ${intelScanResult.error}`}
+                    </div>
+                  )}
+                </div>
+
+                {/* Summary counts */}
+                {intelSignals && (
+                  <div className="grid grid-cols-3 gap-3">
+                    {[
+                      { label: "Critical", count: intelSignals.counts?.critical || 0, color: "rose" },
+                      { label: "Warning",  count: intelSignals.counts?.warning  || 0, color: "amber" },
+                      { label: "Total",    count: intelSignals.counts?.total    || 0, color: "sky"   },
+                    ].map(({ label, count, color }) => (
+                      <div key={label} className={`rounded-xl border border-${color}-400/20 bg-${color}-500/10 p-3 text-center`}>
+                        <div className={`text-2xl font-bold text-${color}-300`}>{count}</div>
+                        <div className="text-xs text-neutral-400">{label}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Tab nav */}
+                <div className="flex gap-1 rounded-xl border border-neutral-700/40 bg-neutral-800/40 p-1">
+                  {[
+                    { id: "signals",    label: "Signals" },
+                    { id: "proposals",  label: "Proposals" },
+                    { id: "autonomous", label: "Autonomous" },
+                  ].map(t => (
+                    <button
+                      key={t.id}
+                      onClick={() => setIntelTab(t.id)}
+                      className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${intelTab === t.id ? "bg-gradient-to-r from-sky-400 to-violet-500 text-black shadow" : "text-neutral-400 hover:text-neutral-200"}`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* ── Signals tab ─────────────────────────────────────────── */}
+                {intelTab === "signals" && (
+                  <div className="space-y-2">
+                    {intelSignalsLoading && <div className="py-8 text-center text-xs text-neutral-500">Loading signals…</div>}
+                    {!intelSignalsLoading && intelSignals && intelSignals.signals?.length === 0 && (
+                      <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 py-8 text-center text-sm text-emerald-300">
+                        No active signals — estate looks healthy
+                      </div>
+                    )}
+                    {!intelSignalsLoading && intelSignals && intelSignals.signals?.map(sig => (
+                      <div key={sig.id} className={`rounded-xl border p-3 ${SIG_STYLES[sig.severity] || SIG_STYLES.info}`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-semibold uppercase">{sig.severity}</span>
+                              <span className="rounded bg-neutral-800/60 px-1.5 py-0.5 text-xs text-neutral-300">{SIG_LABELS[sig.signal_type] || sig.signal_type}</span>
+                              {sig.resolved_at && <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-xs text-emerald-300">Resolved</span>}
+                              {sig.acknowledged && !sig.resolved_at && <span className="rounded bg-sky-500/20 px-1.5 py-0.5 text-xs text-sky-300">Ack'd</span>}
+                            </div>
+                            <div className="mt-1 text-sm font-medium">{sig.service_name}</div>
+                            <div className="mt-0.5 text-xs opacity-80">{sig.detail}</div>
+                            <div className="mt-1 text-xs opacity-60">{new Date(sig.fired_at).toLocaleString()}</div>
+                          </div>
+                          {!sig.acknowledged && !sig.resolved_at && (
+                            <button
+                              onClick={() => {
+                                fetch(`${API_BASE}/api/intelligence/signals/${sig.id}/ack`, { method: "POST" })
+                                  .then(r => r.json())
+                                  .then(d => { if (d.ok) setIntelSignals(prev => prev ? { ...prev, signals: prev.signals.map(s => s.id === sig.id ? { ...s, acknowledged: true } : s) } : null); })
+                                  .catch(() => {});
+                              }}
+                              className="shrink-0 rounded-lg border border-current/20 bg-black/20 px-2 py-1 text-xs hover:bg-black/40"
+                            >
+                              Ack
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {!intelSignalsLoading && !intelSignals && (
+                      <button onClick={() => { setIntelSignalsLoading(true); fetch(`${API_BASE}/api/intelligence/signals?hours=24`).then(r=>r.json()).then(d=>{ if(d.ok) setIntelSignals(d); }).catch(()=>{}).finally(()=>setIntelSignalsLoading(false)); }} className="w-full rounded-xl border border-sky-400/20 py-4 text-xs text-sky-400 hover:bg-sky-500/10">
+                        Load signals
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* ── Proposals tab ───────────────────────────────────────── */}
+                {intelTab === "proposals" && (
+                  <div className="space-y-3">
+                    {/* Filter */}
+                    <div className="flex gap-1 rounded-lg border border-neutral-700/40 bg-neutral-800/40 p-1">
+                      {["pending", "executed", "dismissed", "all"].map(f => (
+                        <button
+                          key={f}
+                          onClick={() => { setIntelPropFilter(f); setIntelProposals(null); }}
+                          className={`flex-1 rounded px-2 py-1 text-xs capitalize transition-all ${intelPropFilter === f ? "bg-sky-500/20 text-sky-300" : "text-neutral-500 hover:text-neutral-300"}`}
+                        >
+                          {f}
+                        </button>
+                      ))}
+                    </div>
+                    {intelProposalsLoading && <div className="py-8 text-center text-xs text-neutral-500">Loading…</div>}
+                    {!intelProposalsLoading && intelProposals && intelProposals.proposals?.length === 0 && (
+                      <div className="py-6 text-center text-xs text-neutral-500">No {intelPropFilter} proposals</div>
+                    )}
+                    {!intelProposalsLoading && intelProposals && intelProposals.proposals?.map(prop => (
+                      <div key={prop.id} className="rounded-xl border border-neutral-700/50 bg-neutral-800/50 p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${
+                                prop.status === "pending"  ? "bg-amber-500/20 text-amber-300" :
+                                prop.status === "executed" ? "bg-emerald-500/20 text-emerald-300" :
+                                prop.status === "failed"   ? "bg-rose-500/20 text-rose-300" :
+                                "bg-neutral-700/60 text-neutral-400"
+                              }`}>{prop.status}</span>
+                              <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-xs text-sky-300">{prop.action_type}</span>
+                              {prop.requires_approval && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-400">Approval required</span>}
+                            </div>
+                            <div className="mt-1 text-sm font-medium">{prop.service_name}</div>
+                            <div className="mt-0.5 text-xs text-neutral-400">{prop.rationale}</div>
+                            {prop.result && (
+                              <div className="mt-1 rounded bg-neutral-900/60 px-2 py-1 font-mono text-xs text-neutral-400">
+                                {typeof prop.result === "string" ? prop.result : JSON.stringify(prop.result).slice(0, 120)}
+                              </div>
+                            )}
+                            <div className="mt-1 text-xs text-neutral-600">{new Date(prop.proposed_at).toLocaleString()}</div>
+                          </div>
+                          {prop.status === "pending" && (
+                            <div className="flex shrink-0 flex-col gap-1">
+                              <button
+                                onClick={() => approveProposal(prop.id)}
+                                disabled={!!intelApproving || !!intelDismissing}
+                                className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
+                              >
+                                {intelApproving === prop.id ? "Executing…" : "Approve"}
+                              </button>
+                              <button
+                                onClick={() => dismissProposal(prop.id)}
+                                disabled={!!intelApproving || !!intelDismissing}
+                                className="rounded-lg border border-neutral-600/30 bg-neutral-700/30 px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-700/50 disabled:opacity-50"
+                              >
+                                {intelDismissing === prop.id ? "…" : "Dismiss"}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ── Autonomous tab ──────────────────────────────────────── */}
+                {intelTab === "autonomous" && (
+                  <div className="space-y-3">
+                    <div className="rounded-xl border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                      Autonomous policies are <strong>disabled by default</strong>. Enabling health.refresh is safe — the engine will re-probe services matching that signal. Enable container.restart only if you are confident in the container_name field on each service.
+                    </div>
+                    {intelPoliciesLoading && <div className="py-8 text-center text-xs text-neutral-500">Loading policies…</div>}
+                    {!intelPoliciesLoading && intelPolicies && intelPolicies.policies?.map(policy => (
+                      <div key={policy.id} className="rounded-xl border border-neutral-700/50 bg-neutral-800/50 p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-xs text-sky-300">{policy.signal_type}</span>
+                              <span className="text-xs text-neutral-500">→</span>
+                              <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-xs text-violet-300">{policy.action_type}</span>
+                            </div>
+                            <div className="mt-1 text-xs text-neutral-400">{policy.description}</div>
+                            <div className="mt-1 text-xs text-neutral-600">
+                              Max {policy.max_per_hour}/hr · cooldown {Math.round(policy.cooldown_secs / 60)}min
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => togglePolicy(policy)}
+                            disabled={intelTogglingPolicy === policy.id}
+                            className={`shrink-0 rounded-lg border px-3 py-1.5 text-xs font-medium transition-all disabled:opacity-50 ${
+                              policy.enabled
+                                ? "border-emerald-400/30 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                                : "border-neutral-600/40 bg-neutral-700/30 text-neutral-400 hover:bg-neutral-700/50"
+                            }`}
+                          >
+                            {intelTogglingPolicy === policy.id ? "…" : policy.enabled ? "Enabled" : "Disabled"}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

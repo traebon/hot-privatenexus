@@ -5,27 +5,28 @@ import RedisStore from "connect-redis";
 import { createClient } from "redis";
 import { readFileSync } from "fs";
 
-import { authRouter }     from "./routes/auth.js";
-import { appsRouter }     from "./routes/apps.js";
-import { stacksRouter }   from "./routes/stacks.js";
-import { adminRouter }    from "./routes/admin.js";
-import { actionsRouter }  from "./routes/actions.js";
-import { metricsRouter }  from "./routes/metrics.js";
-import { filesRouter }    from "./routes/files.js";
-import { alertsRouter }   from "./routes/alerts.js";
-import { logsRouter }     from "./routes/logs.js";
-import { servicesRouter } from "./routes/services.js";
-import { opsRouter }     from "./routes/ops.js";
-import { catalogueRouter } from "./routes/catalogue.js";
-import { dnsRouter } from "./routes/dns.js";
-import { activityRouter }   from "./routes/activity.js";
-import { discoveryRouter }      from "./routes/discovery.js";
-import { dependenciesRouter }   from "./routes/dependencies.js";
-import { governanceRouter }     from "./routes/governance.js";
-import { recoveryRouter }       from "./routes/recovery.js";
-import { requireAuth }   from "./middleware/requireAuth.js";
-import { requireRole }   from "./middleware/requireRole.js";
-import { initDb }        from "./db.js";
+import { authRouter }        from "./routes/auth.js";
+import { appsRouter }        from "./routes/apps.js";
+import { stacksRouter }      from "./routes/stacks.js";
+import { adminRouter }       from "./routes/admin.js";
+import { actionsRouter }     from "./routes/actions.js";
+import { metricsRouter }     from "./routes/metrics.js";
+import { filesRouter }       from "./routes/files.js";
+import { alertsRouter }      from "./routes/alerts.js";
+import { logsRouter }        from "./routes/logs.js";
+import { servicesRouter }    from "./routes/services.js";
+import { opsRouter }         from "./routes/ops.js";
+import { catalogueRouter }   from "./routes/catalogue.js";
+import { dnsRouter }         from "./routes/dns.js";
+import { activityRouter }    from "./routes/activity.js";
+import { discoveryRouter }   from "./routes/discovery.js";
+import { dependenciesRouter }from "./routes/dependencies.js";
+import { governanceRouter }  from "./routes/governance.js";
+import { recoveryRouter }    from "./routes/recovery.js";
+import { intelligenceRouter }from "./routes/intelligence.js";
+import { requireAuth }       from "./middleware/requireAuth.js";
+import { requireRole }       from "./middleware/requireRole.js";
+import { initDb }            from "./db.js";
 import { startHealthScheduler } from "./healthScheduler.js";
 
 const app  = express();
@@ -48,6 +49,10 @@ const sessionSecret =
   process.env.SESSION_SECRET ??
   "dev-secret-change-me";
 
+const MCP_TOKEN =
+  readSecret("/run/secrets/mcp_token") ??
+  process.env.MCP_TOKEN;
+
 app.set("trust proxy", 1);
 app.use(cors({ origin: false }));
 app.use(express.json());
@@ -69,31 +74,45 @@ app.use(
   })
 );
 
+// MCP internal auth — must run before requireAuth so MCP server can call backend APIs
+app.use((req, _res, next) => {
+  const tok = req.headers["x-mcp-internal"];
+  if (tok && MCP_TOKEN && tok === MCP_TOKEN) {
+    req.session.user = {
+      sub: "mcp-server",
+      preferred_username: "mcp-server",
+      roles: ["operator"],
+    };
+  }
+  next();
+});
+
 // Public routes — no auth required
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, service: "privatenexus-backend", version: "4.0.0" })
+  res.json({ ok: true, service: "privatenexus-backend", version: "5.0.0" })
 );
 app.use("/api/auth", authRouter);
 
 // All remaining /api/* routes require a valid session
 app.use("/api", requireAuth);
 
-app.use("/api/apps",     appsRouter);
-app.use("/api/stacks",   stacksRouter);
-app.use("/api/admin",    adminRouter);
-app.use("/api/actions",  requireRole("operator"), actionsRouter);
-app.use("/api/metrics",  metricsRouter);
-app.use("/api/files",    filesRouter);
-app.use("/api/alerts",   alertsRouter);
-app.use("/api/logs",     logsRouter);
-app.use("/api/services", servicesRouter);
-app.use("/api/ops",       opsRouter);
-app.use("/api/catalogue", catalogueRouter);
-app.use("/api/dns", dnsRouter);
-app.use("/api/activity",   activityRouter);
+app.use("/api/apps",          appsRouter);
+app.use("/api/stacks",        stacksRouter);
+app.use("/api/admin",         adminRouter);
+app.use("/api/actions",       requireRole("operator"), actionsRouter);
+app.use("/api/metrics",       metricsRouter);
+app.use("/api/files",         filesRouter);
+app.use("/api/alerts",        alertsRouter);
+app.use("/api/logs",          logsRouter);
+app.use("/api/services",      servicesRouter);
+app.use("/api/ops",           opsRouter);
+app.use("/api/catalogue",     catalogueRouter);
+app.use("/api/dns",           dnsRouter);
+app.use("/api/activity",      activityRouter);
 app.use("/api/discovery",     discoveryRouter);
 app.use("/api/dependencies",  dependenciesRouter);
 app.use("/api/governance",    governanceRouter);
 app.use("/api/recovery",      recoveryRouter);
+app.use("/api/intelligence",  intelligenceRouter);
 
 app.listen(port, () => console.log(`PrivateNexus backend listening on ${port}`));

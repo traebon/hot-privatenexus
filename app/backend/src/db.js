@@ -382,5 +382,71 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS rec_sim_tenant_idx ON recovery_simulations (tenant_id, created_at DESC);
   `);
 
+  // v5.0 — Autonomous Operations
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS intelligence_signals (
+      id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id    UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      service_id   UUID        REFERENCES services(id) ON DELETE SET NULL,
+      service_name TEXT        NOT NULL,
+      signal_type  TEXT        NOT NULL
+                               CHECK (signal_type IN ('down_spike','degrading','latency_spike','intermittent')),
+      severity     TEXT        NOT NULL DEFAULT 'warning'
+                               CHECK (severity IN ('critical','warning','info')),
+      detail       TEXT        NOT NULL,
+      acknowledged BOOLEAN     NOT NULL DEFAULT FALSE,
+      ack_by       TEXT,
+      ack_at       TIMESTAMPTZ,
+      resolved_at  TIMESTAMPTZ,
+      fired_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS intel_sig_tenant_ts_idx  ON intelligence_signals (tenant_id, fired_at DESC);
+    CREATE INDEX IF NOT EXISTS intel_sig_service_idx    ON intelligence_signals (service_id, fired_at DESC);
+    CREATE INDEX IF NOT EXISTS intel_sig_open_idx       ON intelligence_signals (tenant_id, service_id) WHERE resolved_at IS NULL;
+
+    CREATE TABLE IF NOT EXISTS remediation_proposals (
+      id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id         UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      signal_id         UUID        REFERENCES intelligence_signals(id) ON DELETE SET NULL,
+      service_id        UUID        REFERENCES services(id) ON DELETE SET NULL,
+      service_name      TEXT        NOT NULL,
+      action_type       TEXT        NOT NULL,
+      rationale         TEXT        NOT NULL,
+      status            TEXT        NOT NULL DEFAULT 'pending'
+                                    CHECK (status IN ('pending','approved','dismissed','executed','failed')),
+      requires_approval BOOLEAN     NOT NULL DEFAULT FALSE,
+      reviewed_by       TEXT,
+      reviewed_at       TIMESTAMPTZ,
+      executed_at       TIMESTAMPTZ,
+      result            JSONB,
+      proposed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS rem_prop_tenant_status_idx ON remediation_proposals (tenant_id, status, proposed_at DESC);
+    CREATE INDEX IF NOT EXISTS rem_prop_service_idx       ON remediation_proposals (service_id);
+
+    CREATE TABLE IF NOT EXISTS autonomous_policies (
+      id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id     UUID        REFERENCES tenants(id) ON DELETE CASCADE,
+      signal_type   TEXT        NOT NULL,
+      action_type   TEXT        NOT NULL,
+      enabled       BOOLEAN     NOT NULL DEFAULT FALSE,
+      max_per_hour  INT         NOT NULL DEFAULT 3,
+      cooldown_secs INT         NOT NULL DEFAULT 300,
+      description   TEXT,
+      UNIQUE (signal_type, action_type)
+    );
+  `);
+
+  // Seed 5 autonomous policies — all disabled by default, operator must enable explicitly
+  await pool.query(`
+    INSERT INTO autonomous_policies (signal_type, action_type, enabled, max_per_hour, cooldown_secs, description) VALUES
+      ('down_spike',     'health.refresh',    FALSE, 5, 120,  'Auto-probe services with 3+ consecutive failures'),
+      ('degrading',      'health.refresh',    FALSE, 5, 120,  'Auto-probe services showing degradation trend'),
+      ('latency_spike',  'health.refresh',    FALSE, 3, 180,  'Auto-probe services with latency spike'),
+      ('intermittent',   'health.refresh',    FALSE, 3, 180,  'Auto-probe flapping services'),
+      ('down_spike',     'container.restart', FALSE, 1, 600,  'Auto-restart containers with 5+ consecutive failures (CAUTION: requires container_name)')
+    ON CONFLICT (signal_type, action_type) DO NOTHING;
+  `);
+
   console.log("DB connected and schema ready");
 }

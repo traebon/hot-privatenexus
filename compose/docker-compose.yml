@@ -63,6 +63,7 @@ services:
       - session_secret
       - proxmox_token
       - discovery_agent_token
+      - mcp_token
     ports:
       - "127.0.0.1:${PRIVATENEXUS_BACKEND_PORT:-3001}:3001"
     volumes:
