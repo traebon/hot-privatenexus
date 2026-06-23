@@ -6,6 +6,7 @@ import Docker from "dockerode";
 import { getPool, HOT_TENANT_ID } from "../db.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
+import { recordChange } from "./governance.js";
 
 function readSecret(path) {
   try { return readFileSync(path, "utf8").trim(); } catch { return null; }
@@ -536,6 +537,9 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
     );
 
     recordAudit(req, "discovery.candidate.approve", slug, "success", { newServiceId });
+    recordChange(HOT_TENANT_ID, newServiceId, name, "service_registered",
+      req.session?.user?.username || "unknown",
+      `Service '${name}' promoted from Discovery (slug: ${slug})`);
     return res.json({ ok: true, status: "merged", serviceId: newServiceId });
   }
 

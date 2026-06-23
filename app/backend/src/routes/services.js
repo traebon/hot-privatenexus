@@ -3,6 +3,7 @@ import { getPool, HOT_TENANT_ID } from "../db.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
 import { probeAllServices } from "../healthProbe.js";
+import { recordChange } from "./governance.js";
 
 export const servicesRouter = Router();
 
@@ -68,20 +69,25 @@ servicesRouter.post("/", requireRole("admin"), async (req, res) => {
   if (errors.length) return res.status(400).json({ error: errors.join("; ") });
 
   const { name, slug, description, category, access_url, access_mode,
-          runtime_type, owner, backup_policy, health_endpoint, workspace_id } = req.body;
+          runtime_type, owner, backup_policy, health_endpoint, workspace_id,
+          recovery_runbook_url } = req.body;
 
   try {
     const { rows } = await getPool().query(
       `INSERT INTO services
          (tenant_id, workspace_id, name, slug, description, category, access_url,
-          access_mode, runtime_type, owner, backup_policy, health_endpoint)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          access_mode, runtime_type, owner, backup_policy, health_endpoint, recovery_runbook_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING *`,
       [HOT_TENANT_ID, workspace_id || null, name.trim(), slug.trim(),
        description || null, category, access_url || null, access_mode,
-       runtime_type, owner.trim(), backup_policy, health_endpoint || null]
+       runtime_type, owner.trim(), backup_policy, health_endpoint || null,
+       recovery_runbook_url || null]
     );
     recordAudit(req, "service.create", rows[0].slug, "success");
+    recordChange(HOT_TENANT_ID, rows[0].id, rows[0].name, "service_registered",
+      req.session?.user?.username || "unknown",
+      `Service '${rows[0].name}' registered in category '${rows[0].category}'`);
     res.status(201).json(rows[0]);
   } catch (err) {
     if (err.code === "23505") return res.status(409).json({ error: "Slug already exists" });
@@ -95,31 +101,37 @@ servicesRouter.put("/:id", requireRole("admin"), async (req, res) => {
   if (errors.length) return res.status(400).json({ error: errors.join("; ") });
 
   const { name, slug, description, category, access_url, access_mode,
-          runtime_type, owner, backup_policy, health_endpoint, workspace_id } = req.body;
+          runtime_type, owner, backup_policy, health_endpoint, workspace_id,
+          recovery_runbook_url } = req.body;
 
   try {
     const { rows } = await getPool().query(
       `UPDATE services SET
-         workspace_id   = $1,
-         name           = $2,
-         slug           = $3,
-         description    = $4,
-         category       = $5,
-         access_url     = $6,
-         access_mode    = $7,
-         runtime_type   = $8,
-         owner          = $9,
-         backup_policy  = $10,
-         health_endpoint = $11,
-         updated_at     = NOW()
-       WHERE id = $12 AND tenant_id = $13
+         workspace_id          = $1,
+         name                  = $2,
+         slug                  = $3,
+         description           = $4,
+         category              = $5,
+         access_url            = $6,
+         access_mode           = $7,
+         runtime_type          = $8,
+         owner                 = $9,
+         backup_policy         = $10,
+         health_endpoint       = $11,
+         recovery_runbook_url  = $12,
+         updated_at            = NOW()
+       WHERE id = $13 AND tenant_id = $14
        RETURNING *`,
       [workspace_id || null, name.trim(), slug.trim(), description || null,
        category, access_url || null, access_mode, runtime_type, owner.trim(),
-       backup_policy, health_endpoint || null, req.params.id, HOT_TENANT_ID]
+       backup_policy, health_endpoint || null, recovery_runbook_url || null,
+       req.params.id, HOT_TENANT_ID]
     );
     if (!rows.length) return res.status(404).json({ error: "Not found" });
     recordAudit(req, "service.update", rows[0].slug, "success");
+    recordChange(HOT_TENANT_ID, rows[0].id, rows[0].name, "service_updated",
+      req.session?.user?.username || "unknown",
+      `Service '${rows[0].name}' configuration updated`);
     res.json(rows[0]);
   } catch (err) {
     if (err.code === "23505") return res.status(409).json({ error: "Slug already exists" });

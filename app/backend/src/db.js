@@ -226,5 +226,64 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS svc_deps_tenant_idx     ON service_dependencies (tenant_id);
   `);
 
+  // Governance — policy rules, exceptions, change records
+  await pool.query(`
+    ALTER TABLE services ADD COLUMN IF NOT EXISTS recovery_runbook_url TEXT;
+
+    CREATE TABLE IF NOT EXISTS policy_rules (
+      id          UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id   UUID         REFERENCES tenants(id) ON DELETE CASCADE,
+      rule_key    TEXT         NOT NULL UNIQUE,
+      name        TEXT         NOT NULL,
+      description TEXT,
+      severity    TEXT         NOT NULL DEFAULT 'warning'
+                               CHECK (severity IN ('critical','warning','info')),
+      enabled     BOOLEAN      NOT NULL DEFAULT TRUE,
+      built_in    BOOLEAN      NOT NULL DEFAULT FALSE,
+      created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS policy_exceptions (
+      id          UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id   UUID         NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      service_id  UUID         NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+      rule_key    TEXT         NOT NULL,
+      reason      TEXT         NOT NULL,
+      expires_at  TIMESTAMPTZ,
+      created_by  TEXT         NOT NULL,
+      created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, service_id, rule_key)
+    );
+    CREATE INDEX IF NOT EXISTS policy_ex_tenant_idx  ON policy_exceptions (tenant_id);
+    CREATE INDEX IF NOT EXISTS policy_ex_service_idx ON policy_exceptions (service_id);
+
+    CREATE TABLE IF NOT EXISTS change_records (
+      id           UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id    UUID         NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      service_id   UUID         REFERENCES services(id) ON DELETE SET NULL,
+      service_name TEXT,
+      change_type  TEXT         NOT NULL,
+      actor        TEXT         NOT NULL,
+      summary      TEXT         NOT NULL,
+      detail       JSONB,
+      created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS change_records_tenant_ts_idx  ON change_records (tenant_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS change_records_service_idx    ON change_records (service_id);
+  `);
+
+  // Seed built-in policy rules (idempotent)
+  await pool.query(`
+    INSERT INTO policy_rules (rule_key, name, description, severity, built_in) VALUES
+      ('owner_required',          'Owner Required',            'Every service must have an owner assigned.',                                    'warning',  TRUE),
+      ('backup_policy_required',  'Backup Policy Required',    'Every non-dev service must have a backup policy defined.',                      'critical', TRUE),
+      ('health_check_required',   'Health Check Required',     'Every service must have a health endpoint configured.',                         'warning',  TRUE),
+      ('access_mode_classified',  'Access Mode Required',      'Every service must have an access mode classification.',                        'warning',  TRUE),
+      ('admin_service_protected', 'Admin Service Protection',  'Admin services must use VPN, SSO, mTLS, or internal access mode.',             'critical', TRUE),
+      ('recovery_runbook_required','Recovery Runbook Required', 'Every service should have a recovery runbook URL.',                            'info',     TRUE),
+      ('stale_backup',            'Stale Backup',              'Service has no backup recorded in the last 7 days.',                           'warning',  TRUE)
+    ON CONFLICT (rule_key) DO NOTHING;
+  `);
+
   console.log("DB connected and schema ready");
 }

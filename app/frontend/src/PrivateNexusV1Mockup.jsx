@@ -549,6 +549,24 @@ function PrivateNexusDashboard({ authUser }) {
   const [addDepSaving, setAddDepSaving]       = useState(false);
   const [addDepError, setAddDepError]         = useState(null);
 
+  // Governance board
+  const [govViolations, setGovViolations]       = useState([]);
+  const [govSummary, setGovSummary]             = useState({ critical: 0, warning: 0, info: 0, total: 0 });
+  const [govLoading, setGovLoading]             = useState(false);
+  const [govError, setGovError]                 = useState(null);
+  const [govTab, setGovTab]                     = useState("recommendations");
+  const [govRules, setGovRules]                 = useState([]);
+  const [govExceptions, setGovExceptions]       = useState([]);
+  const [govExLoading, setGovExLoading]         = useState(false);
+  const [govChangeRecords, setGovChangeRecords] = useState([]);
+  const [govCrLoading, setGovCrLoading]         = useState(false);
+  const [govReport, setGovReport]               = useState(null);
+  const [govReportLoading, setGovReportLoading] = useState(false);
+  const [showAddExModal, setShowAddExModal]     = useState(null); // violation object to suppress
+  const [addExForm, setAddExForm]               = useState({ reason: "", expires_at: "" });
+  const [addExSaving, setAddExSaving]           = useState(false);
+  const [addExError, setAddExError]             = useState(null);
+
   // Discovery board
   const [discCandidates, setDiscCandidates]   = useState([]);
   const [discSummary, setDiscSummary]         = useState({});
@@ -829,6 +847,25 @@ function PrivateNexusDashboard({ authUser }) {
     const id = setInterval(runLogsQuery, 15000);
     return () => clearInterval(id);
   }, [logsAutoRefresh, logsSource, logsSourceType, logsRange, logsLevel, logsSearch]);
+
+  // Governance — load recommendations + rules when board becomes active or tab changes
+  useEffect(() => {
+    if (activeBoard !== "Governance") return;
+    setGovLoading(true); setGovError(null);
+    fetch(`${API_BASE}/api/governance/recommendations`)
+      .then(r => r.json())
+      .then(d => { if (!d.ok) throw new Error(d.error || "Failed"); setGovViolations(d.violations || []); setGovSummary({ critical: d.violations?.filter(v=>v.severity==="critical").length||0, warning: d.violations?.filter(v=>v.severity==="warning").length||0, info: d.violations?.filter(v=>v.severity==="info").length||0, total: d.count||0 }); })
+      .catch(e => setGovError(e.message))
+      .finally(() => setGovLoading(false));
+    fetch(`${API_BASE}/api/governance/rules`).then(r=>r.json()).then(d=>{ if(d.ok) setGovRules(d.rules||[]); }).catch(()=>{});
+  }, [activeBoard]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (activeBoard !== "Governance") return;
+    if (govTab === "exceptions") { setGovExLoading(true); fetch(`${API_BASE}/api/governance/exceptions`).then(r=>r.json()).then(d=>{ if(d.ok) setGovExceptions(d.exceptions||[]); }).catch(()=>{}).finally(()=>setGovExLoading(false)); }
+    if (govTab === "changelog")  { setGovCrLoading(true); fetch(`${API_BASE}/api/governance/change-records`).then(r=>r.json()).then(d=>{ if(d.ok) setGovChangeRecords(d.records||[]); }).catch(()=>{}).finally(()=>setGovCrLoading(false)); }
+    if (govTab === "report")     { setGovReportLoading(true); fetch(`${API_BASE}/api/governance/report`).then(r=>r.json()).then(d=>{ if(d.ok) setGovReport(d); }).catch(()=>{}).finally(()=>setGovReportLoading(false)); }
+  }, [activeBoard, govTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Dependencies — load graph when board becomes active
   useEffect(() => {
@@ -1614,7 +1651,7 @@ function PrivateNexusDashboard({ authUser }) {
         level: a.level === "critical" ? "critical" : a.level === "warning" ? "warning" : "info",
       }));
 
-  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "DNS", "Catalogue", "Inventory", "Alerts", "Logs", "Activity", "Discovery", "Dependencies", "Emergency"];
+  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "DNS", "Catalogue", "Inventory", "Alerts", "Logs", "Activity", "Discovery", "Dependencies", "Governance", "Emergency"];
 
   const boardThemes = {
     Home:      { active: "from-cyan-400 to-blue-500",     ring: "border-cyan-400/30",     hover: "hover:border-cyan-400/30",     shell: "from-cyan-500/10 to-blue-500/5" },
@@ -1630,6 +1667,7 @@ function PrivateNexusDashboard({ authUser }) {
     Activity:  { active: "from-sky-400 to-indigo-500",    ring: "border-sky-400/30",      hover: "hover:border-sky-400/30",      shell: "from-sky-500/10 to-indigo-500/5" },
     Discovery: { active: "from-teal-400 to-cyan-500",     ring: "border-teal-400/30",     hover: "hover:border-teal-400/30",     shell: "from-teal-500/10 to-cyan-500/5" },
     Dependencies: { active: "from-violet-400 to-fuchsia-500", ring: "border-violet-400/30",  hover: "hover:border-violet-400/30",  shell: "from-violet-500/10 to-fuchsia-500/5" },
+    Governance:   { active: "from-amber-400 to-yellow-500",  ring: "border-amber-400/30",   hover: "hover:border-amber-400/30",   shell: "from-amber-500/10 to-yellow-500/5" },
     Emergency: { active: "from-rose-400 to-pink-500",     ring: "border-rose-400/30",     hover: "hover:border-rose-400/30",     shell: "from-rose-500/10 to-pink-500/5" },
   };
 
@@ -4231,6 +4269,330 @@ function PrivateNexusDashboard({ authUser }) {
     </div>
   );
 
+  // ── Governance helpers ───────────────────────────────────────────────────
+  async function toggleRule(key) {
+    await fetch(`${API_BASE}/api/governance/rules/${key}/toggle`, { method: "PATCH" });
+    fetch(`${API_BASE}/api/governance/rules`).then(r=>r.json()).then(d=>{ if(d.ok) setGovRules(d.rules||[]); });
+  }
+
+  async function submitAddException(e) {
+    e.preventDefault();
+    setAddExSaving(true); setAddExError(null);
+    try {
+      const r = await fetch(`${API_BASE}/api/governance/exceptions`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ service_id: showAddExModal.service_id, rule_key: showAddExModal.rule_key, reason: addExForm.reason, expires_at: addExForm.expires_at || undefined }),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || "Failed");
+      setShowAddExModal(null);
+      setAddExForm({ reason: "", expires_at: "" });
+      setGovLoading(true);
+      fetch(`${API_BASE}/api/governance/recommendations`).then(r=>r.json()).then(d=>{ if(d.ok) { setGovViolations(d.violations||[]); setGovSummary({ critical: d.violations?.filter(v=>v.severity==="critical").length||0, warning: d.violations?.filter(v=>v.severity==="warning").length||0, info: d.violations?.filter(v=>v.severity==="info").length||0, total: d.count||0 }); }}).finally(()=>setGovLoading(false));
+    } catch(err) { setAddExError(err.message); }
+    finally { setAddExSaving(false); }
+  }
+
+  async function deleteException(id) {
+    await fetch(`${API_BASE}/api/governance/exceptions/${id}`, { method: "DELETE" });
+    fetch(`${API_BASE}/api/governance/exceptions`).then(r=>r.json()).then(d=>{ if(d.ok) setGovExceptions(d.exceptions||[]); });
+    fetch(`${API_BASE}/api/governance/recommendations`).then(r=>r.json()).then(d=>{ if(d.ok) { setGovViolations(d.violations||[]); setGovSummary({ critical: d.violations?.filter(v=>v.severity==="critical").length||0, warning: d.violations?.filter(v=>v.severity==="warning").length||0, info: d.violations?.filter(v=>v.severity==="info").length||0, total: d.count||0 }); }});
+  }
+
+  const SEV_STYLES = {
+    critical: { badge: "border-rose-400/40 bg-rose-500/15 text-rose-300",    dot: "bg-rose-400",    label: "Critical" },
+    warning:  { badge: "border-amber-400/40 bg-amber-500/15 text-amber-300",  dot: "bg-amber-400",   label: "Warning"  },
+    info:     { badge: "border-sky-400/40  bg-sky-500/15  text-sky-300",      dot: "bg-sky-400",     label: "Info"     },
+  };
+
+  const RULE_LABELS = {
+    owner_required:          "Owner Required",
+    backup_policy_required:  "Backup Policy Required",
+    health_check_required:   "Health Check Required",
+    access_mode_classified:  "Access Mode Required",
+    admin_service_protected: "Admin Service Protection",
+    recovery_runbook_required:"Recovery Runbook Required",
+    stale_backup:            "Stale Backup",
+  };
+
+  const govBoard = (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="rounded-2xl border border-amber-400/30 bg-gradient-to-r from-amber-500/15 via-yellow-500/10 to-orange-500/10 p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Governance Engine</h2>
+            <p className="mt-0.5 text-sm text-neutral-400">Live policy enforcement across the service registry.</p>
+          </div>
+          <button onClick={() => { setGovLoading(true); fetch(`${API_BASE}/api/governance/recommendations`).then(r=>r.json()).then(d=>{ if(d.ok) { setGovViolations(d.violations||[]); setGovSummary({ critical: d.violations?.filter(v=>v.severity==="critical").length||0, warning: d.violations?.filter(v=>v.severity==="warning").length||0, info: d.violations?.filter(v=>v.severity==="info").length||0, total: d.count||0 }); }}).finally(()=>setGovLoading(false)); }}
+            className="shrink-0 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-300 hover:bg-amber-500/20">
+            Refresh
+          </button>
+        </div>
+        {/* Summary pills */}
+        <div className="mt-3 flex flex-wrap gap-2">
+          {[["critical","rose"],["warning","amber"],["info","sky"]].map(([sev, col]) => (
+            <span key={sev} className={`rounded-full border px-3 py-0.5 text-xs font-medium border-${col}-400/40 bg-${col}-500/15 text-${col}-300`}>
+              {govSummary[sev]} {sev}
+            </span>
+          ))}
+          <span className="text-xs text-neutral-500 self-center ml-1">{govSummary.total} total violation{govSummary.total !== 1 ? "s" : ""}</span>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-neutral-800 pb-0">
+        {[["recommendations","Recommendations"],["rules","Policy Rules"],["exceptions","Exceptions"],["changelog","Change Log"],["report","Report"]].map(([t, label]) => (
+          <button key={t} onClick={() => setGovTab(t)}
+            className={["px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-px", govTab === t ? "border-amber-400 text-amber-300" : "border-transparent text-neutral-500 hover:text-white"].join(" ")}>
+            {label}
+            {t === "recommendations" && govSummary.total > 0 && <span className="ml-1.5 rounded-full bg-rose-500/20 px-1.5 py-0.5 text-[10px] text-rose-300">{govSummary.total}</span>}
+          </button>
+        ))}
+      </div>
+
+      {govError && <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-xs text-rose-300">{govError}</div>}
+
+      {/* ── Recommendations tab ── */}
+      {govTab === "recommendations" && (
+        <div>
+          {govLoading && <div className="text-center text-xs text-neutral-500 py-8">Evaluating policies…</div>}
+          {!govLoading && govViolations.length === 0 && (
+            <div className="flex flex-col items-center gap-2 py-12 text-sm text-neutral-600">
+              <span className="text-3xl">✓</span>
+              All policies satisfied — no violations detected.
+            </div>
+          )}
+          {!govLoading && govViolations.length > 0 && (
+            <div className="space-y-1">
+              {govViolations.map((v, i) => {
+                const st = SEV_STYLES[v.severity] || SEV_STYLES.info;
+                return (
+                  <div key={i} className="flex items-start gap-3 rounded-xl border border-neutral-800 bg-neutral-900/60 px-3 py-2.5 hover:bg-white/5">
+                    <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${st.dot}`}></span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-medium text-white">{v.service_name}</span>
+                        {v.workspace_name && <span className="text-[10px] text-neutral-600">{v.workspace_name}</span>}
+                        <span className={`rounded border px-1.5 py-0 text-[10px] font-medium ${st.badge}`}>{st.label}</span>
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-neutral-400">
+                        <span className="text-neutral-500">{RULE_LABELS[v.rule_key] || v.rule_key}:</span>{" "}{v.detail}
+                      </div>
+                    </div>
+                    <button onClick={() => { setShowAddExModal(v); setAddExForm({ reason: "", expires_at: "" }); setAddExError(null); }}
+                      className="shrink-0 rounded px-2 py-0.5 text-[10px] text-neutral-500 hover:bg-neutral-700 hover:text-amber-300 transition-colors">
+                      Suppress
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Rules tab ── */}
+      {govTab === "rules" && (
+        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-4">
+          <div className="mb-3 text-xs font-medium uppercase tracking-wider text-neutral-500">Policy Rules ({govRules.length})</div>
+          <div className="space-y-1">
+            {govRules.map(rule => {
+              const st = SEV_STYLES[rule.severity] || SEV_STYLES.info;
+              return (
+                <div key={rule.id} className="flex items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-800/40 px-3 py-2">
+                  <span className={`h-2 w-2 rounded-full shrink-0 ${st.dot}`}></span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-medium text-white">{rule.name}</div>
+                    <div className="text-[10px] text-neutral-500">{rule.description}</div>
+                  </div>
+                  <span className={`shrink-0 rounded border px-1.5 py-0 text-[10px] font-medium ${st.badge}`}>{st.label}</span>
+                  {rule.built_in && <span className="shrink-0 text-[10px] text-neutral-600">built-in</span>}
+                  <button onClick={() => toggleRule(rule.rule_key)}
+                    className={["shrink-0 rounded px-2 py-0.5 text-[10px] font-medium transition-colors", rule.enabled ? "bg-emerald-500/15 text-emerald-300 hover:bg-rose-500/15 hover:text-rose-300" : "bg-neutral-700 text-neutral-500 hover:bg-emerald-500/15 hover:text-emerald-300"].join(" ")}>
+                    {rule.enabled ? "Enabled" : "Disabled"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Exceptions tab ── */}
+      {govTab === "exceptions" && (
+        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-xs font-medium uppercase tracking-wider text-neutral-500">Active Exceptions ({govExceptions.length})</div>
+          </div>
+          {govExLoading && <div className="text-xs text-neutral-500">Loading…</div>}
+          {!govExLoading && govExceptions.length === 0 && <div className="text-sm text-neutral-600 py-4 text-center">No exceptions recorded.</div>}
+          <div className="space-y-1">
+            {govExceptions.map(ex => {
+              const expired = ex.expires_at && new Date(ex.expires_at) < new Date();
+              return (
+                <div key={ex.id} className={["flex items-start gap-3 rounded-lg border px-3 py-2", expired ? "border-neutral-800/50 opacity-50" : "border-neutral-800 bg-neutral-800/40"].join(" ")}>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-medium text-white">{ex.service_name}</span>
+                      <span className="text-[10px] text-neutral-500">{RULE_LABELS[ex.rule_key] || ex.rule_key}</span>
+                      {expired && <span className="text-[10px] text-rose-400">expired</span>}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-neutral-400">{ex.reason}</div>
+                    <div className="mt-0.5 text-[10px] text-neutral-600">
+                      by {ex.created_by}{ex.expires_at ? ` · expires ${new Date(ex.expires_at).toLocaleDateString()}` : " · no expiry"}
+                    </div>
+                  </div>
+                  <button onClick={() => deleteException(ex.id)} className="shrink-0 text-[10px] text-neutral-600 hover:text-rose-400 transition-colors">✕</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Change Log tab ── */}
+      {govTab === "changelog" && (
+        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-4">
+          <div className="mb-3 text-xs font-medium uppercase tracking-wider text-neutral-500">Change Records</div>
+          {govCrLoading && <div className="text-xs text-neutral-500">Loading…</div>}
+          {!govCrLoading && govChangeRecords.length === 0 && <div className="text-sm text-neutral-600 py-4 text-center">No change records yet.</div>}
+          <div className="space-y-1">
+            {govChangeRecords.map(r => (
+              <div key={r.id} className="flex items-start gap-3 rounded-lg border border-neutral-800 bg-neutral-800/30 px-3 py-2">
+                <span className="shrink-0 mt-0.5 rounded bg-neutral-700 px-1.5 py-0.5 text-[9px] font-mono text-neutral-400 whitespace-nowrap">{r.change_type}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-neutral-300">{r.summary}</div>
+                  <div className="mt-0.5 text-[10px] text-neutral-600">{r.actor} · {new Date(r.created_at).toLocaleString()}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Report tab ── */}
+      {govTab === "report" && (
+        <div className="space-y-4">
+          {govReportLoading && <div className="text-center text-xs text-neutral-500 py-8">Generating report…</div>}
+          {govReport && (
+            <>
+              {/* Summary cards */}
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {[["Total Services", govReport.summary?.total_services, "text-white"],["Critical", govReport.summary?.critical, "text-rose-300"],["Warning", govReport.summary?.warning, "text-amber-300"],["Info", govReport.summary?.info, "text-sky-300"]].map(([label, val, cls]) => (
+                  <div key={label} className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-3 text-center">
+                    <div className={`text-2xl font-bold ${cls}`}>{val ?? "—"}</div>
+                    <div className="mt-0.5 text-[10px] text-neutral-500 uppercase tracking-wider">{label}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Stale backups */}
+              {govReport.sections?.stale_backups?.length > 0 && (
+                <div className="rounded-2xl border border-amber-400/20 bg-neutral-900/60 p-4">
+                  <div className="mb-2 text-xs font-medium uppercase tracking-wider text-amber-400/70">Stale Backups ({govReport.sections.stale_backups.length})</div>
+                  <table className="w-full text-xs">
+                    <thead><tr className="text-left text-[10px] text-neutral-600 border-b border-neutral-800"><th className="pb-1 pr-4">Service</th><th className="pb-1 pr-4">Workspace</th><th className="pb-1">Last Backup</th></tr></thead>
+                    <tbody className="divide-y divide-neutral-800/40">
+                      {govReport.sections.stale_backups.map(s => (
+                        <tr key={s.id} className="hover:bg-white/5">
+                          <td className="py-1 pr-4 text-neutral-300">{s.name}</td>
+                          <td className="pr-4 text-neutral-500">{s.workspace_name || "—"}</td>
+                          <td className={s.latest_backup ? "text-amber-300" : "text-rose-300"}>{s.latest_backup ? `${s.age_days}d ago` : "Never"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Activity by user */}
+              {govReport.sections?.activity_by_user?.length > 0 && (
+                <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-4">
+                  <div className="mb-2 text-xs font-medium uppercase tracking-wider text-neutral-500">Admin Activity by User</div>
+                  <table className="w-full text-xs">
+                    <thead><tr className="text-left text-[10px] text-neutral-600 border-b border-neutral-800"><th className="pb-1 pr-4">User</th><th className="pb-1 pr-4">Actions (30d)</th><th className="pb-1">Actions (90d)</th></tr></thead>
+                    <tbody className="divide-y divide-neutral-800/40">
+                      {govReport.sections.activity_by_user.map(u => (
+                        <tr key={u.username} className="hover:bg-white/5">
+                          <td className="py-1 pr-4 text-neutral-300">{u.username}</td>
+                          <td className="pr-4 text-neutral-400">{u.actions_30d}</td>
+                          <td className="text-neutral-400">{u.actions_90d}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Restore readiness */}
+              <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-4">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-xs font-medium uppercase tracking-wider text-neutral-500">Restore Readiness per Service</div>
+                  <a href={`${API_BASE}/api/governance/report/export`}
+                    className="rounded-lg border border-neutral-700 bg-neutral-800 px-2.5 py-1 text-[10px] text-neutral-400 hover:text-white transition-colors">
+                    Export JSON ↓
+                  </a>
+                </div>
+                <table className="w-full text-xs">
+                  <thead><tr className="text-left text-[10px] text-neutral-600 border-b border-neutral-800"><th className="pb-1 pr-4">Service</th><th className="pb-1 pr-2">Backup Policy</th><th className="pb-1 pr-2">Health EP</th><th className="pb-1 pr-2">Runbook</th><th className="pb-1">Status</th></tr></thead>
+                  <tbody className="divide-y divide-neutral-800/40">
+                    {(govReport.sections?.restore_readiness || []).map(s => (
+                      <tr key={s.id} className="hover:bg-white/5">
+                        <td className="py-1 pr-4 text-neutral-300">{s.name}</td>
+                        <td className="pr-2 text-neutral-500 text-[10px]">{s.backup_policy}</td>
+                        <td className="pr-2">{s.health_endpoint ? <span className="text-emerald-400">✓</span> : <span className="text-rose-400">✗</span>}</td>
+                        <td className="pr-2">{s.recovery_runbook_url ? <span className="text-emerald-400">✓</span> : <span className="text-rose-400">✗</span>}</td>
+                        <td className={s.status === "healthy" ? "text-emerald-400" : s.status === "down" ? "text-rose-400" : "text-neutral-500"}>{s.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Suppress (add exception) modal */}
+      {showAddExModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="w-full max-w-md rounded-2xl border border-amber-400/30 bg-neutral-900 p-6 shadow-2xl">
+            <div className="mb-4">
+              <div className="text-base font-semibold text-white">Suppress Violation</div>
+              <div className="mt-1 text-xs text-neutral-400">
+                <span className="text-white">{showAddExModal.service_name}</span> — {RULE_LABELS[showAddExModal.rule_key] || showAddExModal.rule_key}
+              </div>
+              <div className="mt-0.5 text-[11px] text-neutral-500">{showAddExModal.detail}</div>
+            </div>
+            <form onSubmit={submitAddException} className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs text-neutral-400">Reason for exception <span className="text-rose-400">*</span></label>
+                <textarea value={addExForm.reason} onChange={e => setAddExForm(f=>({...f, reason: e.target.value}))} rows={3} required
+                  placeholder="e.g. Dev-only service, backup handled by infrastructure layer"
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-xs text-white placeholder:text-neutral-600 resize-none" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-neutral-400">Expires (optional)</label>
+                <input type="date" value={addExForm.expires_at} onChange={e => setAddExForm(f=>({...f, expires_at: e.target.value}))}
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-xs text-white" />
+              </div>
+              {addExError && <div className="text-xs text-rose-400">{addExError}</div>}
+              <div className="flex gap-2 pt-1">
+                <button type="button" onClick={() => setShowAddExModal(null)}
+                  className="flex-1 rounded-lg border border-neutral-700 bg-neutral-800 py-2 text-xs text-neutral-400 hover:text-white">Cancel</button>
+                <button type="submit" disabled={addExSaving}
+                  className="flex-1 rounded-lg bg-amber-600 py-2 text-xs font-semibold text-white hover:bg-amber-500 disabled:opacity-50">
+                  {addExSaving ? "Saving…" : "Suppress"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   const discoveryBoard = (
     <div className="space-y-4">
       {/* Header */}
@@ -5910,6 +6272,9 @@ function PrivateNexusDashboard({ authUser }) {
 
           {/* Dependencies */}
           {activeBoard === "Dependencies" && depBoard}
+
+          {/* Governance */}
+          {activeBoard === "Governance" && govBoard}
 
           {/* Emergency */}
           {activeBoard === "Emergency" && (
