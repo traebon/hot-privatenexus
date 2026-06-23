@@ -534,6 +534,21 @@ function PrivateNexusDashboard({ authUser }) {
   const [maintenanceReason, setMaintenanceReason] = useState("");
   const [maintenanceDuration, setMaintenanceDuration] = useState("1h");
 
+  // Dependencies board
+  const [depGraph, setDepGraph]               = useState({ services: [], edges: [] });
+  const [depLoading, setDepLoading]           = useState(false);
+  const [depError, setDepError]               = useState(null);
+  const [depSelected, setDepSelected]         = useState(null);
+  const [depBlast, setDepBlast]               = useState(null);
+  const [depBlastLoading, setDepBlastLoading] = useState(false);
+  const [depRestore, setDepRestore]           = useState(null);
+  const [depRestoreLoading, setDepRestoreLoading] = useState(false);
+  const [depAnalysisMode, setDepAnalysisMode] = useState("blast");
+  const [showAddDepModal, setShowAddDepModal] = useState(false);
+  const [addDepForm, setAddDepForm]           = useState({ upstream_id: "", downstream_id: "", dep_type: "hard", notes: "" });
+  const [addDepSaving, setAddDepSaving]       = useState(false);
+  const [addDepError, setAddDepError]         = useState(null);
+
   // Discovery board
   const [discCandidates, setDiscCandidates]   = useState([]);
   const [discSummary, setDiscSummary]         = useState({});
@@ -814,6 +829,17 @@ function PrivateNexusDashboard({ authUser }) {
     const id = setInterval(runLogsQuery, 15000);
     return () => clearInterval(id);
   }, [logsAutoRefresh, logsSource, logsSourceType, logsRange, logsLevel, logsSearch]);
+
+  // Dependencies — load graph when board becomes active
+  useEffect(() => {
+    if (activeBoard !== "Dependencies") return;
+    setDepLoading(true); setDepError(null);
+    fetch(`${API_BASE}/api/dependencies/graph`)
+      .then(r => r.json())
+      .then(d => { if (!d.ok) throw new Error(d.error || "Failed"); setDepGraph(d); })
+      .catch(e => setDepError(e.message))
+      .finally(() => setDepLoading(false));
+  }, [activeBoard]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Discovery — load candidates when board becomes active
   useEffect(() => {
@@ -1588,7 +1614,7 @@ function PrivateNexusDashboard({ authUser }) {
         level: a.level === "critical" ? "critical" : a.level === "warning" ? "warning" : "info",
       }));
 
-  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "DNS", "Catalogue", "Inventory", "Alerts", "Logs", "Activity", "Discovery", "Emergency"];
+  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "DNS", "Catalogue", "Inventory", "Alerts", "Logs", "Activity", "Discovery", "Dependencies", "Emergency"];
 
   const boardThemes = {
     Home:      { active: "from-cyan-400 to-blue-500",     ring: "border-cyan-400/30",     hover: "hover:border-cyan-400/30",     shell: "from-cyan-500/10 to-blue-500/5" },
@@ -1603,6 +1629,7 @@ function PrivateNexusDashboard({ authUser }) {
     Catalogue: { active: "from-violet-400 to-purple-500",  ring: "border-violet-400/30",   hover: "hover:border-violet-400/30",   shell: "from-violet-500/10 to-purple-500/5" },
     Activity:  { active: "from-sky-400 to-indigo-500",    ring: "border-sky-400/30",      hover: "hover:border-sky-400/30",      shell: "from-sky-500/10 to-indigo-500/5" },
     Discovery: { active: "from-teal-400 to-cyan-500",     ring: "border-teal-400/30",     hover: "hover:border-teal-400/30",     shell: "from-teal-500/10 to-cyan-500/5" },
+    Dependencies: { active: "from-violet-400 to-fuchsia-500", ring: "border-violet-400/30",  hover: "hover:border-violet-400/30",  shell: "from-violet-500/10 to-fuchsia-500/5" },
     Emergency: { active: "from-rose-400 to-pink-500",     ring: "border-rose-400/30",     hover: "hover:border-rose-400/30",     shell: "from-rose-500/10 to-pink-500/5" },
   };
 
@@ -3897,6 +3924,313 @@ function PrivateNexusDashboard({ authUser }) {
     );
   };
 
+  // ── Dependency graph helpers ─────────────────────────────────────────────
+  const DEP_COLORS = { hard: "#a78bfa", soft: "#67e8f9", data: "#fbbf24", auth: "#f472b6", network: "#34d399" };
+  const DEP_LABELS = { hard: "Hard", soft: "Soft", data: "Data", auth: "Auth", network: "Net" };
+
+  function layoutGraph(services, edges) {
+    const n = services.length;
+    if (n === 0) return { nodes: [], arrows: [] };
+    const W = 600; const H = 340; const R = Math.min(W, H) * 0.38;
+    const cx = W / 2; const cy = H / 2;
+    const nodes = services.map((s, i) => {
+      const angle = (2 * Math.PI * i) / n - Math.PI / 2;
+      return { ...s, x: cx + R * Math.cos(angle), y: cy + R * Math.sin(angle) };
+    });
+    const nodeById = Object.fromEntries(nodes.map(n => [n.id, n]));
+    const arrows = edges.map(e => {
+      const src = nodeById[e.upstream_id]; const dst = nodeById[e.downstream_id];
+      if (!src || !dst) return null;
+      const dx = dst.x - src.x; const dy = dst.y - src.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const NR = 18;
+      return { ...e, x1: src.x + dx/dist*NR, y1: src.y + dy/dist*NR, x2: dst.x - dx/dist*NR, y2: dst.y - dy/dist*NR };
+    }).filter(Boolean);
+    return { nodes, arrows };
+  }
+
+  function loadDepAnalysis(svc) {
+    if (!svc) return;
+    setDepSelected(svc);
+    setDepBlast(null); setDepRestore(null);
+    setDepBlastLoading(true);
+    fetch(`${API_BASE}/api/dependencies/blast-radius/${svc.id}`)
+      .then(r => r.json()).then(d => setDepBlast(d)).catch(() => {})
+      .finally(() => setDepBlastLoading(false));
+    setDepRestoreLoading(true);
+    fetch(`${API_BASE}/api/dependencies/restore-chain/${svc.id}`)
+      .then(r => r.json()).then(d => setDepRestore(d)).catch(() => {})
+      .finally(() => setDepRestoreLoading(false));
+  }
+
+  async function submitAddDep(e) {
+    e.preventDefault();
+    setAddDepSaving(true); setAddDepError(null);
+    try {
+      const r = await fetch(`${API_BASE}/api/dependencies`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(addDepForm),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || "Failed");
+      setShowAddDepModal(false);
+      setAddDepForm({ upstream_id: "", downstream_id: "", dep_type: "hard", notes: "" });
+      setDepLoading(true); setDepError(null);
+      fetch(`${API_BASE}/api/dependencies/graph`)
+        .then(r => r.json()).then(d => { if (d.ok) setDepGraph(d); })
+        .finally(() => setDepLoading(false));
+    } catch(err) { setAddDepError(err.message); }
+    finally { setAddDepSaving(false); }
+  }
+
+  async function deleteDep(id) {
+    await fetch(`${API_BASE}/api/dependencies/${id}`, { method: "DELETE" });
+    fetch(`${API_BASE}/api/dependencies/graph`)
+      .then(r => r.json()).then(d => { if (d.ok) setDepGraph(d); });
+    if (depSelected) loadDepAnalysis(depSelected);
+  }
+
+  const { nodes: graphNodes, arrows: graphArrows } = layoutGraph(depGraph.services || [], depGraph.edges || []);
+
+  const depBoard = (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="rounded-2xl border border-violet-400/30 bg-gradient-to-r from-violet-500/15 via-fuchsia-500/10 to-purple-500/10 p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Dependency Intelligence</h2>
+            <p className="mt-0.5 text-sm text-neutral-400">
+              Map service dependencies, analyse blast radius, and plan recovery order.
+            </p>
+          </div>
+          <button
+            onClick={() => { setAddDepForm({ upstream_id: "", downstream_id: "", dep_type: "hard", notes: "" }); setAddDepError(null); setShowAddDepModal(true); }}
+            className="shrink-0 rounded-lg border border-violet-400/40 bg-violet-500/15 px-3 py-1.5 text-xs font-semibold text-violet-300 hover:bg-violet-500/25">
+            + Add Dependency
+          </button>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-3 text-xs text-neutral-400">
+          {Object.entries(DEP_COLORS).map(([k, c]) => (
+            <span key={k} className="flex items-center gap-1">
+              <span className="inline-block h-2 w-4 rounded-full" style={{ background: c }}></span>
+              {DEP_LABELS[k]}
+            </span>
+          ))}
+          <span className="ml-2 text-neutral-500">{(depGraph.services||[]).length} services · {(depGraph.edges||[]).length} edges</span>
+        </div>
+      </div>
+
+      {depError && <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-xs text-rose-300">{depError}</div>}
+      {depLoading && <div className="text-center text-xs text-neutral-500 py-8">Loading graph…</div>}
+
+      {!depLoading && (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+          {/* Graph panel */}
+          <div className="xl:col-span-2 rounded-2xl border border-violet-400/20 bg-neutral-900/60 p-4">
+            <div className="mb-3 text-xs font-medium uppercase tracking-wider text-neutral-500">Dependency Graph</div>
+            {graphNodes.length === 0
+              ? <div className="flex h-40 items-center justify-center text-sm text-neutral-600">No services registered yet.</div>
+              : (
+                <svg viewBox="0 0 600 340" className="w-full select-none" style={{ maxHeight: 340 }}>
+                  <defs>
+                    {Object.entries(DEP_COLORS).map(([k, c]) => (
+                      <marker key={k} id={`arrow-${k}`} markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                        <path d="M0,0 L0,6 L8,3 z" fill={c} />
+                      </marker>
+                    ))}
+                  </defs>
+                  {graphArrows.map((a, i) => (
+                    <line key={i} x1={a.x1} y1={a.y1} x2={a.x2} y2={a.y2}
+                      stroke={DEP_COLORS[a.dep_type] || "#6b7280"} strokeWidth="1.5" strokeOpacity="0.7"
+                      markerEnd={`url(#arrow-${a.dep_type})`} />
+                  ))}
+                  {graphNodes.map(n => (
+                    <g key={n.id} className="cursor-pointer" onClick={() => loadDepAnalysis(n)}>
+                      <circle cx={n.x} cy={n.y} r={18}
+                        fill={depSelected?.id === n.id ? "#7c3aed" : "#1e1b4b"}
+                        stroke={depSelected?.id === n.id ? "#a78bfa" : "#4c1d95"}
+                        strokeWidth={depSelected?.id === n.id ? 2 : 1} />
+                      <circle cx={n.x} cy={n.y} r={5}
+                        fill={n.status === "healthy" ? "#34d399" : n.status === "down" ? "#f87171" : "#6b7280"} />
+                      <text x={n.x} y={n.y + 30} textAnchor="middle" fontSize="9" fill="#a1a1aa"
+                        className="pointer-events-none">
+                        {n.name?.length > 14 ? n.name.slice(0, 13) + "…" : n.name}
+                      </text>
+                    </g>
+                  ))}
+                </svg>
+              )
+            }
+            <div className="mt-2 text-[10px] text-neutral-600">Click a node to analyse blast radius and restore chain.</div>
+          </div>
+
+          {/* Analysis panel */}
+          <div className="rounded-2xl border border-violet-400/20 bg-neutral-900/60 p-4">
+            {!depSelected
+              ? <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 text-sm text-neutral-600">
+                  <span className="text-2xl">⬡</span>
+                  Select a node to see analysis
+                </div>
+              : (
+                <div>
+                  <div className="mb-3 flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-semibold text-white">{depSelected.name}</div>
+                      <div className="text-[10px] text-neutral-500">{depSelected.slug}</div>
+                    </div>
+                    <div className="flex gap-1">
+                      {["blast","restore"].map(m => (
+                        <button key={m} onClick={() => setDepAnalysisMode(m)}
+                          className={["rounded px-2 py-0.5 text-[10px] font-medium capitalize transition-colors", depAnalysisMode === m ? "bg-violet-500/30 text-violet-300" : "bg-neutral-800 text-neutral-500 hover:text-white"].join(" ")}>
+                          {m === "blast" ? "Blast Radius" : "Restore Chain"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {depAnalysisMode === "blast" && (
+                    depBlastLoading
+                      ? <div className="text-xs text-neutral-500">Analysing…</div>
+                      : depBlast && (
+                        <div>
+                          <div className="mb-2 rounded-lg border border-violet-400/20 bg-violet-500/10 px-3 py-2 text-xs">
+                            <span className="font-semibold text-violet-300">{depBlast.summary?.total ?? 0}</span>
+                            <span className="text-neutral-400"> services affected</span>
+                            {depBlast.summary?.hard > 0 && <span className="ml-2 text-rose-300">({depBlast.summary.hard} hard)</span>}
+                          </div>
+                          <div className="space-y-1 max-h-52 overflow-y-auto">
+                            {(depBlast.affected || []).length === 0
+                              ? <div className="text-xs text-neutral-600">No downstream dependencies.</div>
+                              : (depBlast.affected || []).map(a => (
+                                <div key={a.id} className="flex items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-800/40 px-2 py-1.5">
+                                  <span className="inline-block h-2 w-2 rounded-full" style={{ background: DEP_COLORS[a.dep_type] || "#6b7280" }}></span>
+                                  <span className="flex-1 text-xs text-neutral-300">{a.name}</span>
+                                  <span className="text-[10px] text-neutral-600">depth {a.depth}</span>
+                                  <span className={["text-[10px]", a.status === "healthy" ? "text-emerald-400" : a.status === "down" ? "text-rose-400" : "text-neutral-500"].join(" ")}>{a.status}</span>
+                                </div>
+                              ))
+                            }
+                          </div>
+                        </div>
+                      )
+                  )}
+
+                  {depAnalysisMode === "restore" && (
+                    depRestoreLoading
+                      ? <div className="text-xs text-neutral-500">Calculating…</div>
+                      : depRestore && (
+                        <div>
+                          <div className="mb-2 text-[10px] text-neutral-500">Restore deepest dependencies first</div>
+                          <div className="space-y-1 max-h-52 overflow-y-auto">
+                            {(depRestore.restore_chain || []).map((r, i) => (
+                              <div key={r.id || i} className="flex items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-800/40 px-2 py-1.5">
+                                <span className="text-[10px] font-mono text-neutral-600 w-5 shrink-0">{i + 1}.</span>
+                                <span className="flex-1 text-xs text-neutral-300">{r.name}</span>
+                                {r.dep_type === "target" && <span className="text-[10px] text-violet-400">target</span>}
+                                <span className={["text-[10px]", r.status === "healthy" ? "text-emerald-400" : r.status === "down" ? "text-rose-400" : "text-neutral-500"].join(" ")}>{r.status}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                  )}
+                </div>
+              )
+            }
+          </div>
+        </div>
+      )}
+
+      {/* Edge list */}
+      {!depLoading && (depGraph.edges || []).length > 0 && (
+        <div className="rounded-2xl border border-violet-400/20 bg-neutral-900/60 p-4">
+          <div className="mb-3 text-xs font-medium uppercase tracking-wider text-neutral-500">All Dependencies ({depGraph.edges.length})</div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-neutral-800 text-left text-[10px] uppercase tracking-wider text-neutral-600">
+                  <th className="pb-2 pr-4">Upstream</th>
+                  <th className="pb-2 pr-4">→</th>
+                  <th className="pb-2 pr-4">Downstream</th>
+                  <th className="pb-2 pr-4">Type</th>
+                  <th className="pb-2 pr-4">Notes</th>
+                  <th className="pb-2"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-800/50">
+                {depGraph.edges.map(e => (
+                  <tr key={e.id} className="hover:bg-white/5">
+                    <td className="py-1.5 pr-4 text-neutral-300">{e.upstream_name}</td>
+                    <td className="pr-4">
+                      <span className="inline-block h-2 w-3 rounded-full" style={{ background: DEP_COLORS[e.dep_type] || "#6b7280" }}></span>
+                    </td>
+                    <td className="pr-4 text-neutral-300">{e.downstream_name}</td>
+                    <td className="pr-4"><span className="rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ background: (DEP_COLORS[e.dep_type] || "#6b7280") + "33", color: DEP_COLORS[e.dep_type] || "#6b7280" }}>{e.dep_type}</span></td>
+                    <td className="pr-4 text-neutral-600 max-w-[160px] truncate">{e.notes || "—"}</td>
+                    <td>
+                      <button onClick={() => deleteDep(e.id)} className="text-[10px] text-neutral-600 hover:text-rose-400 transition-colors">✕</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Add Dependency Modal */}
+      {showAddDepModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="w-full max-w-md rounded-2xl border border-violet-400/30 bg-neutral-900 p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-base font-semibold text-white">Add Dependency</h3>
+              <button onClick={() => setShowAddDepModal(false)} className="text-neutral-500 hover:text-white">✕</button>
+            </div>
+            <form onSubmit={submitAddDep} className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs text-neutral-400">Upstream (depends-on)</label>
+                <select value={addDepForm.upstream_id} onChange={e => setAddDepForm(f => ({ ...f, upstream_id: e.target.value }))}
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-xs text-white" required>
+                  <option value="">— select service —</option>
+                  {(depGraph.services || []).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-neutral-400">Downstream (depends on upstream)</label>
+                <select value={addDepForm.downstream_id} onChange={e => setAddDepForm(f => ({ ...f, downstream_id: e.target.value }))}
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-xs text-white" required>
+                  <option value="">— select service —</option>
+                  {(depGraph.services || []).filter(s => s.id !== addDepForm.upstream_id).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-neutral-400">Dependency Type</label>
+                <select value={addDepForm.dep_type} onChange={e => setAddDepForm(f => ({ ...f, dep_type: e.target.value }))}
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-xs text-white">
+                  {Object.entries(DEP_LABELS).map(([k, v]) => <option key={k} value={k}>{v} — {k === "hard" ? "fails without upstream" : k === "soft" ? "degrades without upstream" : k === "data" ? "reads data from upstream" : k === "auth" ? "authenticates via upstream" : "routed through upstream"}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-neutral-400">Notes (optional)</label>
+                <input type="text" value={addDepForm.notes} onChange={e => setAddDepForm(f => ({ ...f, notes: e.target.value }))}
+                  placeholder="e.g. uses PostgreSQL connection pool"
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-xs text-white placeholder:text-neutral-600" />
+              </div>
+              {addDepError && <div className="text-xs text-rose-400">{addDepError}</div>}
+              <div className="flex gap-2 pt-1">
+                <button type="button" onClick={() => setShowAddDepModal(false)}
+                  className="flex-1 rounded-lg border border-neutral-700 bg-neutral-800 py-2 text-xs text-neutral-400 hover:text-white">Cancel</button>
+                <button type="submit" disabled={addDepSaving}
+                  className="flex-1 rounded-lg bg-violet-600 py-2 text-xs font-semibold text-white hover:bg-violet-500 disabled:opacity-50">
+                  {addDepSaving ? "Saving…" : "Add Dependency"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   const discoveryBoard = (
     <div className="space-y-4">
       {/* Header */}
@@ -5573,6 +5907,9 @@ function PrivateNexusDashboard({ authUser }) {
 
           {/* Discovery */}
           {activeBoard === "Discovery" && discoveryBoard}
+
+          {/* Dependencies */}
+          {activeBoard === "Dependencies" && depBoard}
 
           {/* Emergency */}
           {activeBoard === "Emergency" && (

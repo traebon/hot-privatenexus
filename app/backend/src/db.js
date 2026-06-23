@@ -207,5 +207,24 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS agent_tokens_hash_idx   ON agent_tokens (token_hash);
   `);
 
+  // Service dependency graph
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS service_dependencies (
+      id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id     UUID         NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      upstream_id   UUID         NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+      downstream_id UUID         NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+      dep_type      TEXT         NOT NULL DEFAULT 'hard'
+                                 CHECK (dep_type IN ('hard','soft','data','auth','network')),
+      notes         TEXT,
+      created_by    TEXT         NOT NULL,
+      created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, upstream_id, downstream_id)
+    );
+    CREATE INDEX IF NOT EXISTS svc_deps_upstream_idx   ON service_dependencies (upstream_id);
+    CREATE INDEX IF NOT EXISTS svc_deps_downstream_idx ON service_dependencies (downstream_id);
+    CREATE INDEX IF NOT EXISTS svc_deps_tenant_idx     ON service_dependencies (tenant_id);
+  `);
+
   console.log("DB connected and schema ready");
 }

@@ -1,4 +1,4 @@
-# PrivateNexus v1.18.0 — Discovery agent tokens, Proxmox/Caddy scanner activation
+# PrivateNexus v2.0.0 — Dependency Intelligence + MCP server
 services:
   privatenexus-db:
     image: postgres:16-alpine
@@ -90,6 +90,30 @@ services:
     networks:
       - pn-edge
 
+  privatenexus-mcp:
+    build:
+      context: ..
+      dockerfile: docker/mcp.Dockerfile
+    container_name: privatenexus-mcp
+    restart: unless-stopped
+    environment:
+      MCP_PORT: 3002
+      DB_HOST: privatenexus-db
+      DB_PORT: 5432
+      DB_NAME: privatenexus
+      DB_USER: privatenexus
+    secrets:
+      - db_password
+      - mcp_token
+    ports:
+      - "10.10.60.105:3002:3002"
+    depends_on:
+      privatenexus-db:
+        condition: service_healthy
+    networks:
+      - pn-internal
+      - pn-edge
+
 volumes:
   pn-db-data:
 
@@ -109,3 +133,5 @@ secrets:
     file: ../secrets/proxmox_token.txt
   discovery_agent_token:
     file: ../secrets/discovery_agent_token.txt
+  mcp_token:
+    file: ../secrets/mcp_token.txt
