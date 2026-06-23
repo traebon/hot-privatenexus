@@ -569,6 +569,33 @@ function PrivateNexusDashboard({ authUser }) {
   const [govReportLoading, setGovReportLoading] = useState(false);
   const [showAddExModal, setShowAddExModal]     = useState(null);
   const [addExForm, setAddExForm]               = useState({ reason: "", expires_at: "" });
+
+  // Recovery board
+  const [recTab, setRecTab]                       = useState("readiness");
+  const [recReadiness, setRecReadiness]           = useState(null);   // { services, summary }
+  const [recReadinessLoading, setRecReadinessLoading] = useState(false);
+  const [recGaps, setRecGaps]                     = useState(null);   // { gaps, total }
+  const [recGapsLoading, setRecGapsLoading]       = useState(false);
+  const [recSimServices, setRecSimServices]       = useState([]);     // service list for simulator form
+  const [recWorkspaces, setRecWorkspaces]         = useState([]);
+  const [recSimForm, setRecSimForm]               = useState({ scenario_type: "service_down", target_type: "service", target_id: "" });
+  const [recSimRunning, setRecSimRunning]         = useState(false);
+  const [recSimResult, setRecSimResult]           = useState(null);
+  const [recSimError, setRecSimError]             = useState(null);
+  const [recSimHistory, setRecSimHistory]         = useState([]);
+  const [recSimHistoryLoading, setRecSimHistoryLoading] = useState(false);
+  const [recPlaybookService, setRecPlaybookService] = useState("");
+  const [recPlaybookIncident, setRecPlaybookIncident] = useState("");
+  const [recPlaybookRunning, setRecPlaybookRunning] = useState(false);
+  const [recPlaybook, setRecPlaybook]             = useState(null);
+  const [recPlaybookError, setRecPlaybookError]   = useState(null);
+  const [recTests, setRecTests]                   = useState([]);
+  const [recTestsLoading, setRecTestsLoading]     = useState(false);
+  const [showAddTestModal, setShowAddTestModal]   = useState(false);
+  const [addTestForm, setAddTestForm]             = useState({ service_id: "", test_type: "dry_run", outcome: "passed", rto_actual_min: "", notes: "" });
+  const [addTestSaving, setAddTestSaving]         = useState(false);
+  const [addTestError, setAddTestError]           = useState(null);
+  const [recExpandedService, setRecExpandedService] = useState(null); // for signals detail
   const [addExSaving, setAddExSaving]           = useState(false);
   const [addExError, setAddExError]             = useState(null);
   // Approval queue
@@ -885,6 +912,31 @@ function PrivateNexusDashboard({ authUser }) {
     if (govTab === "report")     { setGovReportLoading(true); fetch(`${API_BASE}/api/governance/report`).then(r=>r.json()).then(d=>{ if(d.ok) setGovReport(d); }).catch(()=>{}).finally(()=>setGovReportLoading(false)); }
     if (govTab === "approvals")  { setActReqLoading(true); fetch(`${API_BASE}/api/actions/requests?status=${actReqFilter}`).then(r=>r.json()).then(d=>{ if(d.ok) setActRequests(d.requests||[]); }).catch(()=>{}).finally(()=>setActReqLoading(false)); }
   }, [activeBoard, govTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Recovery — load data when board or tab changes
+  useEffect(() => {
+    if (activeBoard !== "Recovery") return;
+    if (recTab === "readiness" && !recReadiness) {
+      setRecReadinessLoading(true);
+      fetch(`${API_BASE}/api/recovery/readiness`).then(r=>r.json()).then(d=>{ if(d.ok) setRecReadiness(d); }).catch(()=>{}).finally(()=>setRecReadinessLoading(false));
+    }
+    if (recTab === "gaps" && !recGaps) {
+      setRecGapsLoading(true);
+      fetch(`${API_BASE}/api/recovery/gaps`).then(r=>r.json()).then(d=>{ if(d.ok) setRecGaps(d); }).catch(()=>{}).finally(()=>setRecGapsLoading(false));
+    }
+    if ((recTab === "simulator" || recTab === "playbook") && recSimServices.length === 0) {
+      fetch(`${API_BASE}/api/services`).then(r=>r.json()).then(d=>{ if(Array.isArray(d)) setRecSimServices(d); }).catch(()=>{});
+    }
+    if (recTab === "simulator" && recSimHistory.length === 0) {
+      setRecSimHistoryLoading(true);
+      fetch(`${API_BASE}/api/recovery/simulations`).then(r=>r.json()).then(d=>{ if(d.ok) setRecSimHistory(d.simulations||[]); }).catch(()=>{}).finally(()=>setRecSimHistoryLoading(false));
+    }
+    if (recTab === "tests") {
+      setRecTestsLoading(true);
+      fetch(`${API_BASE}/api/recovery/restore-tests`).then(r=>r.json()).then(d=>{ if(d.ok) setRecTests(d.tests||[]); }).catch(()=>{}).finally(()=>setRecTestsLoading(false));
+      if (recSimServices.length === 0) fetch(`${API_BASE}/api/services`).then(r=>r.json()).then(d=>{ if(Array.isArray(d)) setRecSimServices(d); }).catch(()=>{});
+    }
+  }, [activeBoard, recTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Dependencies — load graph when board becomes active
   useEffect(() => {
@@ -1670,7 +1722,7 @@ function PrivateNexusDashboard({ authUser }) {
         level: a.level === "critical" ? "critical" : a.level === "warning" ? "warning" : "info",
       }));
 
-  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "DNS", "Catalogue", "Inventory", "Alerts", "Logs", "Activity", "Discovery", "Dependencies", "Governance", "Emergency"];
+  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "DNS", "Catalogue", "Inventory", "Alerts", "Logs", "Activity", "Discovery", "Dependencies", "Governance", "Recovery", "Emergency"];
 
   const boardThemes = {
     Home:      { active: "from-cyan-400 to-blue-500",     ring: "border-cyan-400/30",     hover: "hover:border-cyan-400/30",     shell: "from-cyan-500/10 to-blue-500/5" },
@@ -1687,6 +1739,7 @@ function PrivateNexusDashboard({ authUser }) {
     Discovery: { active: "from-teal-400 to-cyan-500",     ring: "border-teal-400/30",     hover: "hover:border-teal-400/30",     shell: "from-teal-500/10 to-cyan-500/5" },
     Dependencies: { active: "from-violet-400 to-fuchsia-500", ring: "border-violet-400/30",  hover: "hover:border-violet-400/30",  shell: "from-violet-500/10 to-fuchsia-500/5" },
     Governance:   { active: "from-amber-400 to-yellow-500",  ring: "border-amber-400/30",   hover: "hover:border-amber-400/30",   shell: "from-amber-500/10 to-yellow-500/5" },
+    Recovery:  { active: "from-emerald-400 to-teal-500",  ring: "border-emerald-400/30",  hover: "hover:border-emerald-400/30",  shell: "from-emerald-500/10 to-teal-500/5" },
     Emergency: { active: "from-rose-400 to-pink-500",     ring: "border-rose-400/30",     hover: "hover:border-rose-400/30",     shell: "from-rose-500/10 to-pink-500/5" },
   };
 
@@ -2978,6 +3031,72 @@ function PrivateNexusDashboard({ authUser }) {
     const res = await fetch(`${API_BASE}/api/actions/rollback-points/${containerName}`);
     const d = await res.json();
     if (d.ok) setRollbackPoints(p => ({ ...p, [containerName]: d.points }));
+  }
+
+  async function runSimulation(e) {
+    e.preventDefault();
+    if (!recSimForm.target_id) return;
+    setRecSimRunning(true); setRecSimError(null); setRecSimResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/recovery/simulate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(recSimForm),
+      });
+      const d = await res.json();
+      if (!d.ok) throw new Error(d.error || "Simulation failed");
+      setRecSimResult(d);
+      // Refresh history
+      fetch(`${API_BASE}/api/recovery/simulations`).then(r=>r.json()).then(d=>{ if(d.ok) setRecSimHistory(d.simulations||[]); }).catch(()=>{});
+    } catch (err) { setRecSimError(err.message); }
+    finally { setRecSimRunning(false); }
+  }
+
+  async function generatePlaybook(e) {
+    e.preventDefault();
+    if (!recPlaybookService) return;
+    setRecPlaybookRunning(true); setRecPlaybookError(null); setRecPlaybook(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/recovery/playbook`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ service_id: recPlaybookService, incident_summary: recPlaybookIncident || undefined }),
+      });
+      const d = await res.json();
+      if (!d.ok) throw new Error(d.error || "Failed to generate playbook");
+      setRecPlaybook(d.playbook);
+    } catch (err) { setRecPlaybookError(err.message); }
+    finally { setRecPlaybookRunning(false); }
+  }
+
+  async function saveRestoreTest(e) {
+    e.preventDefault();
+    setAddTestSaving(true); setAddTestError(null);
+    try {
+      const body = { ...addTestForm };
+      if (body.rto_actual_min) body.rto_actual_min = Number(body.rto_actual_min); else delete body.rto_actual_min;
+      const res = await fetch(`${API_BASE}/api/recovery/restore-tests`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const d = await res.json();
+      if (!d.ok) throw new Error(d.error || "Failed to save test");
+      setShowAddTestModal(false);
+      setAddTestForm({ service_id: "", test_type: "dry_run", outcome: "passed", rto_actual_min: "", notes: "" });
+      setRecTests(prev => [d.test, ...prev]);
+      // Invalidate readiness cache so it refreshes on next view
+      setRecReadiness(null); setRecGaps(null);
+    } catch (err) { setAddTestError(err.message); }
+    finally { setAddTestSaving(false); }
+  }
+
+  async function deleteRestoreTest(id) {
+    if (!confirm("Delete this restore test record?")) return;
+    const res = await fetch(`${API_BASE}/api/recovery/restore-tests/${id}`, { method: "DELETE" });
+    if (res.ok) { setRecTests(prev => prev.filter(t => t.id !== id)); setRecReadiness(null); setRecGaps(null); }
+  }
+
+  async function deleteSimulation(id) {
+    if (!confirm("Delete this simulation?")) return;
+    const res = await fetch(`${API_BASE}/api/recovery/simulations/${id}`, { method: "DELETE" });
+    if (res.ok) setRecSimHistory(prev => prev.filter(s => s.id !== id));
   }
 
   async function archiveService(svc) {
@@ -6514,7 +6633,557 @@ function PrivateNexusDashboard({ authUser }) {
           {/* Governance */}
           {activeBoard === "Governance" && govBoard}
 
-          {/* Emergency */}
+          {/* Recovery Intelligence */}
+          {activeBoard === "Recovery" && (() => {
+            const TIER_STYLES = {
+              recoverable: "border-emerald-400/30 bg-emerald-500/10 text-emerald-300",
+              at_risk:     "border-amber-400/30 bg-amber-500/10 text-amber-300",
+              unproven:    "border-orange-400/30 bg-orange-500/10 text-orange-300",
+              blocked:     "border-rose-400/30 bg-rose-500/10 text-rose-300",
+            };
+            const TIER_LABEL = { recoverable: "Recoverable", at_risk: "At Risk", unproven: "Unproven", blocked: "Blocked" };
+            const PRIORITY_STYLES = { critical: "text-rose-300", high: "text-amber-300", medium: "text-sky-300", low: "text-neutral-400" };
+            const REC_TABS = ["readiness", "gaps", "simulator", "playbook", "tests"];
+            const fmtRTO = min => min == null ? "unknown" : min >= 60 ? `~${Math.round(min/60)}h` : `~${min}m`;
+            const fmtDLW = min => min == null ? "unknown" : min >= 1440 ? `~${Math.round(min/1440)}d` : min >= 60 ? `~${Math.round(min/60)}h` : `~${min}m`;
+
+            return (
+              <div className="space-y-4">
+                {/* Header */}
+                <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-r from-emerald-500/10 via-teal-500/10 to-cyan-500/5 p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs uppercase tracking-wider text-emerald-300/80">v4.0</div>
+                      <div className="text-lg font-semibold">Recovery Intelligence</div>
+                    </div>
+                    <button onClick={() => { setRecReadiness(null); setRecGaps(null); setRecSimHistory([]); setRecTests([]); setRecTab(t => t); }}
+                      className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20">
+                      Refresh All
+                    </button>
+                  </div>
+                </div>
+
+                {/* Summary tiles */}
+                {recReadiness?.summary && (
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+                    {[
+                      { label: "Recoverable", key: "recoverable", cls: "border-emerald-400/30 bg-emerald-500/10 text-emerald-300" },
+                      { label: "At Risk",     key: "at_risk",     cls: "border-amber-400/30 bg-amber-500/10 text-amber-300" },
+                      { label: "Unproven",    key: "unproven",    cls: "border-orange-400/30 bg-orange-500/10 text-orange-300" },
+                      { label: "Blocked",     key: "blocked",     cls: "border-rose-400/30 bg-rose-500/10 text-rose-300" },
+                      { label: "Avg Score",   key: "avg_score",   cls: "border-neutral-600 bg-neutral-800/60 text-neutral-300", suffix: "/100" },
+                    ].map(({ label, key, cls, suffix = "" }) => (
+                      <div key={key} className={["rounded-xl border px-4 py-3 text-center", cls].join(" ")}>
+                        <div className="text-2xl font-bold">{recReadiness.summary[key]}{suffix}</div>
+                        <div className="mt-0.5 text-[10px] uppercase tracking-wider opacity-70">{label}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Tabs */}
+                <div className="flex gap-1 border-b border-neutral-800">
+                  {REC_TABS.map(t => (
+                    <button key={t} onClick={() => setRecTab(t)}
+                      className={["px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-px",
+                        recTab === t ? "border-emerald-400 text-emerald-300" : "border-transparent text-neutral-500 hover:text-white"].join(" ")}>
+                      {t === "tests" ? "Restore Tests" : t.charAt(0).toUpperCase() + t.slice(1)}
+                      {t === "gaps" && recGaps?.total > 0 && <span className="ml-1.5 rounded-full bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">{recGaps.total}</span>}
+                    </button>
+                  ))}
+                </div>
+
+                {/* ── READINESS TAB ── */}
+                {recTab === "readiness" && (
+                  <div>
+                    {recReadinessLoading && <div className="py-8 text-center text-xs text-neutral-500">Loading readiness data…</div>}
+                    {!recReadinessLoading && !recReadiness && <div className="py-8 text-center text-xs text-neutral-500">Click Refresh All to load.</div>}
+                    {recReadiness?.services?.length === 0 && <div className="py-8 text-center text-xs text-neutral-500">No services registered yet.</div>}
+                    {recReadiness?.services?.length > 0 && (
+                      <div className="overflow-x-auto rounded-2xl border border-neutral-800">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-b border-neutral-800 bg-neutral-900/60 text-left text-neutral-500">
+                              <th className="px-3 py-2.5 font-medium">Service</th>
+                              <th className="px-3 py-2.5 font-medium">Tier</th>
+                              <th className="px-3 py-2.5 font-medium">Score</th>
+                              <th className="px-3 py-2.5 font-medium">Est. RTO</th>
+                              <th className="px-3 py-2.5 font-medium">Data Loss</th>
+                              <th className="px-3 py-2.5 font-medium">Blockers</th>
+                              <th className="px-3 py-2.5 font-medium">Signals</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {recReadiness.services.map(svc => (
+                              <React.Fragment key={svc.id}>
+                                <tr className="border-b border-neutral-800/50 hover:bg-neutral-800/30">
+                                  <td className="px-3 py-2.5">
+                                    <div className="font-medium text-neutral-200">{svc.name}</div>
+                                    <div className="text-[10px] text-neutral-600 capitalize">{svc.category} · {svc.workspace_name || "—"}</div>
+                                  </td>
+                                  <td className="px-3 py-2.5">
+                                    <span className={["rounded-full border px-2.5 py-0.5 text-[10px] font-medium", TIER_STYLES[svc.tier] || "border-neutral-600 text-neutral-400"].join(" ")}>
+                                      {TIER_LABEL[svc.tier] || svc.tier}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-2.5">
+                                    <div className="flex items-center gap-2">
+                                      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-neutral-800">
+                                        <div className={["h-full rounded-full transition-all", svc.score >= 85 ? "bg-emerald-500" : svc.score >= 60 ? "bg-amber-500" : svc.score >= 30 ? "bg-orange-500" : "bg-rose-500"].join(" ")}
+                                          style={{ width: `${svc.score}%` }} />
+                                      </div>
+                                      <span className="font-medium text-neutral-300">{svc.score}</span>
+                                    </div>
+                                  </td>
+                                  <td className="px-3 py-2.5 text-neutral-400">{fmtRTO(svc.rto_min)}</td>
+                                  <td className="px-3 py-2.5 text-neutral-400">{fmtDLW(svc.data_loss_window_min)}</td>
+                                  <td className="px-3 py-2.5">
+                                    {svc.blockers.length === 0
+                                      ? <span className="text-emerald-400/60 text-[10px]">None</span>
+                                      : <span className="rounded-full bg-rose-500/10 px-1.5 py-0.5 text-[10px] text-rose-300">{svc.blockers.length}</span>}
+                                  </td>
+                                  <td className="px-3 py-2.5">
+                                    <button onClick={() => setRecExpandedService(recExpandedService === svc.id ? null : svc.id)}
+                                      className="rounded border border-neutral-700 px-2 py-0.5 text-[10px] text-neutral-500 hover:border-emerald-400/30 hover:text-emerald-300">
+                                      {recExpandedService === svc.id ? "Hide" : "Details"}
+                                    </button>
+                                  </td>
+                                </tr>
+                                {recExpandedService === svc.id && (
+                                  <tr key={svc.id + "-det"} className="bg-neutral-900/40">
+                                    <td colSpan={7} className="px-4 py-3">
+                                      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                                        {svc.signals.map(sig => (
+                                          <div key={sig.key} className={["flex items-start gap-2 rounded-lg border p-2", sig.pass ? "border-emerald-400/20 bg-emerald-500/5" : "border-rose-400/20 bg-rose-500/5"].join(" ")}>
+                                            <span className={["shrink-0 text-sm leading-none mt-0.5", sig.pass ? "text-emerald-400" : "text-rose-400"].join(" ")}>{sig.pass ? "✓" : "✗"}</span>
+                                            <div className="min-w-0">
+                                              <div className="text-[10px] font-medium text-neutral-300">{sig.label}</div>
+                                              <div className="text-[10px] text-neutral-500 break-all">{sig.detail}</div>
+                                              <div className="text-[10px] text-neutral-700">{sig.earned}/{sig.points}pts</div>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                      {svc.blockers.length > 0 && (
+                                        <div className="mt-2 space-y-1">
+                                          {svc.blockers.map((b, i) => (
+                                            <div key={i} className="flex items-center gap-1.5 text-[10px] text-rose-300/80"><span>⛔</span><span>{b}</span></div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                )}
+                              </React.Fragment>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── GAPS TAB ── */}
+                {recTab === "gaps" && (
+                  <div className="space-y-3">
+                    {recGapsLoading && <div className="py-8 text-center text-xs text-neutral-500">Analysing gaps…</div>}
+                    {!recGapsLoading && recGaps?.gaps?.length === 0 && (
+                      <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/5 px-6 py-10 text-center">
+                        <div className="text-2xl">✓</div>
+                        <div className="mt-2 text-sm font-medium text-emerald-300">All services are Recoverable</div>
+                        <div className="mt-1 text-xs text-neutral-500">No recovery gaps detected.</div>
+                      </div>
+                    )}
+                    {recGaps?.gaps?.map(gap => (
+                      <div key={gap.id} className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <span className={["rounded-full border px-2.5 py-0.5 text-[10px] font-medium", TIER_STYLES[gap.tier] || ""].join(" ")}>{TIER_LABEL[gap.tier]}</span>
+                            <div>
+                              <div className="font-medium text-neutral-200">{gap.name}</div>
+                              <div className="text-[10px] text-neutral-600 capitalize">{gap.category} · {gap.workspace_name || "Unassigned"}</div>
+                            </div>
+                          </div>
+                          <div className="shrink-0 text-lg font-bold text-neutral-300">{gap.score}<span className="text-xs text-neutral-600">/100</span></div>
+                        </div>
+                        {gap.blockers.length > 0 && (
+                          <div className="mt-3 space-y-1">
+                            {gap.blockers.map((b, i) => <div key={i} className="flex items-start gap-1.5 text-xs text-rose-300/80"><span className="shrink-0">⛔</span><span>{b}</span></div>)}
+                          </div>
+                        )}
+                        {gap.remediation.length > 0 && (
+                          <div className="mt-3 border-t border-neutral-800 pt-3 space-y-1.5">
+                            <div className="text-[10px] uppercase tracking-wider text-neutral-600">Remediation steps</div>
+                            {gap.remediation.map((r, i) => (
+                              <div key={i} className="flex items-start gap-2 text-xs">
+                                <span className={["shrink-0 rounded px-1 py-px text-[9px] font-bold uppercase", PRIORITY_STYLES[r.priority] || "text-neutral-400"].join(" ")}>{r.priority}</span>
+                                <span className="text-neutral-400">{r.action}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ── SIMULATOR TAB ── */}
+                {recTab === "simulator" && (
+                  <div className="space-y-4">
+                    <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
+                      <div className="mb-3 text-sm font-semibold text-neutral-200">Run Failure Simulation</div>
+                      <form onSubmit={runSimulation} className="space-y-3">
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="mb-1 block text-xs text-neutral-400">Scenario</label>
+                            <select value={recSimForm.scenario_type} onChange={e => setRecSimForm(f => ({ ...f, scenario_type: e.target.value }))}
+                              className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none">
+                              <option value="service_down">Service Down</option>
+                              <option value="workspace_down">Workspace Down</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-xs text-neutral-400">Target type</label>
+                            <select value={recSimForm.target_type}
+                              onChange={e => setRecSimForm(f => ({ ...f, target_type: e.target.value, target_id: "" }))}
+                              className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none">
+                              <option value="service">Service</option>
+                              <option value="workspace">Workspace</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs text-neutral-400">
+                            {recSimForm.target_type === "workspace" ? "Workspace" : "Service"} <span className="text-rose-400">*</span>
+                          </label>
+                          <select value={recSimForm.target_id} onChange={e => setRecSimForm(f => ({ ...f, target_id: e.target.value }))}
+                            className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none">
+                            <option value="">Select…</option>
+                            {recSimForm.target_type === "service"
+                              ? recSimServices.map(s => <option key={s.id} value={s.id}>{s.name}</option>)
+                              : [...new Map(recSimServices.filter(s => s.workspace_id).map(s => [s.workspace_id, s])).values()]
+                                  .map(s => <option key={s.workspace_id} value={s.workspace_id}>{s.workspace_name}</option>)}
+                          </select>
+                        </div>
+                        {recSimError && <div className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{recSimError}</div>}
+                        <button type="submit" disabled={recSimRunning || !recSimForm.target_id}
+                          className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-xs text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50">
+                          {recSimRunning ? "Simulating…" : "Run Simulation"}
+                        </button>
+                      </form>
+                    </div>
+
+                    {recSimResult && (
+                      <div className="rounded-2xl border border-emerald-400/20 bg-neutral-900/70 p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="text-sm font-semibold text-neutral-200">{recSimResult.target_names?.join(", ")}</div>
+                          <span className={["rounded-full border px-2.5 py-0.5 text-[10px] font-medium", TIER_STYLES[recSimResult.summary.overall_tier] || ""].join(" ")}>
+                            {TIER_LABEL[recSimResult.summary.overall_tier] || recSimResult.summary.overall_tier}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 text-xs">
+                          {[
+                            ["Steps",      recSimResult.summary.steps],
+                            ["Total RTO",  fmtRTO(recSimResult.summary.total_rto_min)],
+                            ["Max Loss",   fmtDLW(recSimResult.summary.worst_data_loss_min)],
+                            ["Blockers",   recSimResult.summary.blockers_count],
+                          ].map(([label, val]) => (
+                            <div key={label} className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2">
+                              <div className="text-neutral-500 text-[10px]">{label}</div>
+                              <div className="mt-0.5 font-semibold text-neutral-200">{val}</div>
+                            </div>
+                          ))}
+                        </div>
+                        {recSimResult.blockers.length > 0 && (
+                          <div className="rounded-lg border border-rose-400/20 bg-rose-500/5 p-3 space-y-1">
+                            <div className="text-[10px] uppercase tracking-wider text-rose-400/70">Blockers</div>
+                            {recSimResult.blockers.map((b, i) => (
+                              <div key={i} className="text-xs text-rose-300/80">⛔ <span className="text-neutral-500">{b.service}:</span> {b.blocker}</div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="overflow-hidden rounded-xl border border-neutral-800">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="border-b border-neutral-800 bg-neutral-900/60 text-left text-neutral-500">
+                                <th className="px-3 py-2 font-medium">#</th>
+                                <th className="px-3 py-2 font-medium">Service</th>
+                                <th className="px-3 py-2 font-medium">Tier</th>
+                                <th className="px-3 py-2 font-medium">RTO</th>
+                                <th className="px-3 py-2 font-medium">Last Backup</th>
+                                <th className="px-3 py-2 font-medium">Runbook</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-neutral-800/50">
+                              {recSimResult.plan.map(step => (
+                                <tr key={step.service_id} className={["hover:bg-neutral-800/30", step.is_target ? "bg-emerald-500/5" : ""].join(" ")}>
+                                  <td className="px-3 py-2 text-neutral-500">{step.step}</td>
+                                  <td className="px-3 py-2">
+                                    <div className={["font-medium", step.is_target ? "text-emerald-300" : "text-neutral-200"].join(" ")}>{step.service_name}</div>
+                                    <div className="text-[10px] text-neutral-600">{step.is_target ? "target" : "dependency"}</div>
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    <span className={["rounded-full border px-2 py-px text-[10px]", TIER_STYLES[step.tier] || ""].join(" ")}>{TIER_LABEL[step.tier]}</span>
+                                  </td>
+                                  <td className="px-3 py-2 text-neutral-400">{fmtRTO(step.rto_min)}</td>
+                                  <td className="px-3 py-2 text-neutral-400">
+                                    {step.latest_backup
+                                      ? `${step.latest_backup.trust_state} · ${new Date(step.latest_backup.taken_at).toLocaleDateString()}`
+                                      : <span className="text-rose-400/60">None</span>}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    {step.runbook_url
+                                      ? <a href={step.runbook_url} target="_blank" rel="noreferrer" className="text-emerald-400/70 hover:text-emerald-300">↗</a>
+                                      : <span className="text-neutral-700">—</span>}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {recSimHistory.length > 0 && (
+                      <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
+                        <div className="mb-3 text-sm font-semibold text-neutral-200">Simulation History</div>
+                        <div className="space-y-2">
+                          {recSimHistory.map(sim => (
+                            <div key={sim.id} className="flex items-center justify-between rounded-lg border border-neutral-800 bg-neutral-900/40 px-3 py-2">
+                              <div className="text-xs">
+                                <span className="font-medium text-neutral-300">{sim.target_name}</span>
+                                <span className="ml-2 text-neutral-600 capitalize">{sim.scenario_type?.replace("_", " ")}</span>
+                                <span className="ml-2 text-neutral-700">· {new Date(sim.created_at).toLocaleDateString()}</span>
+                                {sim.summary?.overall_tier && <span className={["ml-2 rounded-full border px-2 py-px text-[10px]", TIER_STYLES[sim.summary.overall_tier] || ""].join(" ")}>{TIER_LABEL[sim.summary.overall_tier]}</span>}
+                              </div>
+                              {can("admin") && (
+                                <button onClick={() => deleteSimulation(sim.id)} className="rounded px-2 py-0.5 text-[10px] border border-rose-400/20 text-rose-400/60 hover:bg-rose-500/10">Del</button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── PLAYBOOK TAB ── */}
+                {recTab === "playbook" && (
+                  <div className="space-y-4">
+                    <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
+                      <div className="mb-3 text-sm font-semibold text-neutral-200">Generate Recovery Playbook</div>
+                      <form onSubmit={generatePlaybook} className="space-y-3">
+                        <div>
+                          <label className="mb-1 block text-xs text-neutral-400">Service <span className="text-rose-400">*</span></label>
+                          <select value={recPlaybookService} onChange={e => setRecPlaybookService(e.target.value)}
+                            className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none">
+                            <option value="">Select service…</option>
+                            {recSimServices.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs text-neutral-400">Incident summary <span className="text-neutral-600">(optional)</span></label>
+                          <input value={recPlaybookIncident} onChange={e => setRecPlaybookIncident(e.target.value)}
+                            placeholder="e.g. Nextcloud is returning 502 after VM migration"
+                            className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none" />
+                        </div>
+                        {recPlaybookError && <div className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{recPlaybookError}</div>}
+                        <button type="submit" disabled={recPlaybookRunning || !recPlaybookService}
+                          className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-xs text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50">
+                          {recPlaybookRunning ? "Generating…" : "Generate Playbook"}
+                        </button>
+                      </form>
+                    </div>
+
+                    {recPlaybook && (
+                      <div className="rounded-2xl border border-emerald-400/20 bg-neutral-900/70 p-4 space-y-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-base font-bold text-neutral-100">{recPlaybook.title}</div>
+                            <div className="text-xs text-neutral-500">Generated {new Date(recPlaybook.generated_at).toLocaleString()}</div>
+                          </div>
+                          <div className="shrink-0 text-right text-xs text-neutral-500">
+                            <div>{recPlaybook.summary.total_steps} step{recPlaybook.summary.total_steps !== 1 ? "s" : ""}</div>
+                            <div>Est. RTO: {fmtRTO(recPlaybook.summary.estimated_rto_min)}</div>
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-amber-400/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300/80">
+                          <span className="font-medium">Incident:</span> {recPlaybook.incident_summary}
+                        </div>
+                        {recPlaybook.summary.blockers.length > 0 && (
+                          <div className="rounded-lg border border-rose-400/20 bg-rose-500/5 p-3 space-y-1">
+                            <div className="text-[10px] uppercase tracking-wider text-rose-400/70">Blockers — resolve before attempting restore</div>
+                            {recPlaybook.summary.blockers.map((b, i) => <div key={i} className="text-xs text-rose-300/80">⛔ {b}</div>)}
+                          </div>
+                        )}
+                        <div className="space-y-3">
+                          {recPlaybook.sections.map(sec => (
+                            <div key={sec.service_id} className={["rounded-xl border p-4", sec.is_target ? "border-emerald-400/20 bg-emerald-500/5" : "border-neutral-800 bg-neutral-900/40"].join(" ")}>
+                              <div className="mb-2 flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="h-5 w-5 shrink-0 rounded-full border border-emerald-400/30 bg-emerald-500/20 text-center text-[10px] leading-5 text-emerald-300 font-bold">{sec.step}</span>
+                                  <span className="text-sm font-medium text-neutral-200">{sec.service_name}</span>
+                                  {!sec.is_target && <span className="text-[10px] text-neutral-600">dependency</span>}
+                                  {sec.is_target && <span className="text-[10px] text-emerald-500/70">target</span>}
+                                </div>
+                                <span className="text-xs text-neutral-500">{sec.rto_min != null ? fmtRTO(sec.rto_min) : "RTO unknown"}</span>
+                              </div>
+                              {sec.backup_source && (
+                                <div className="mb-2 rounded border border-neutral-800 bg-neutral-900/60 px-2 py-1 text-[10px] text-neutral-400 font-mono">{sec.backup_source}</div>
+                              )}
+                              {sec.warnings.length > 0 && sec.warnings.map((w, i) => <div key={i} className="mb-1 text-xs text-rose-300/80">⚠ {w}</div>)}
+                              <ol className="ml-4 list-decimal space-y-1 text-xs text-neutral-400 marker:text-neutral-700">
+                                {sec.instructions.map((instr, i) => (
+                                  <li key={i} className={instr.startsWith("⚠") ? "text-amber-300/80" : ""}>{instr}</li>
+                                ))}
+                              </ol>
+                              {sec.runbook_url && (
+                                <a href={sec.runbook_url} target="_blank" rel="noreferrer"
+                                  className="mt-2 inline-block rounded border border-emerald-400/20 px-2 py-0.5 text-[10px] text-emerald-400/70 hover:text-emerald-300">
+                                  Open Runbook ↗
+                                </a>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── RESTORE TESTS TAB ── */}
+                {recTab === "tests" && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs text-neutral-500">{recTests.length} test record{recTests.length !== 1 ? "s" : ""}</div>
+                      {can("operator") && (
+                        <button onClick={() => { setShowAddTestModal(true); setAddTestError(null); setAddTestForm({ service_id: "", test_type: "dry_run", outcome: "passed", rto_actual_min: "", notes: "" }); }}
+                          className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20">
+                          + Record Test
+                        </button>
+                      )}
+                    </div>
+                    {recTestsLoading && <div className="py-8 text-center text-xs text-neutral-500">Loading…</div>}
+                    {!recTestsLoading && recTests.length === 0 && (
+                      <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 px-6 py-10 text-center">
+                        <div className="text-sm text-neutral-500">No restore tests recorded yet.</div>
+                        <div className="mt-1 text-xs text-neutral-600">A passed test within 90 days adds 15 pts to the confidence score.</div>
+                      </div>
+                    )}
+                    {recTests.length > 0 && (
+                      <div className="overflow-hidden rounded-2xl border border-neutral-800">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-b border-neutral-800 bg-neutral-900/60 text-left text-neutral-500">
+                              <th className="px-3 py-2.5 font-medium">Service</th>
+                              <th className="px-3 py-2.5 font-medium">Type</th>
+                              <th className="px-3 py-2.5 font-medium">Outcome</th>
+                              <th className="px-3 py-2.5 font-medium">Actual RTO</th>
+                              <th className="px-3 py-2.5 font-medium">By</th>
+                              <th className="px-3 py-2.5 font-medium">Date</th>
+                              <th className="px-3 py-2.5 font-medium">Notes</th>
+                              {can("admin") && <th className="px-3 py-2.5"></th>}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-800/50">
+                            {recTests.map(t => (
+                              <tr key={t.id} className="hover:bg-neutral-800/30">
+                                <td className="px-3 py-2 font-medium text-neutral-200">{t.service_name || "—"}</td>
+                                <td className="px-3 py-2 font-mono text-neutral-400">{t.test_type}</td>
+                                <td className="px-3 py-2">
+                                  <span className={["rounded-full border px-2 py-px text-[10px] font-medium",
+                                    t.outcome === "passed" ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-300" :
+                                    t.outcome === "partial" ? "border-amber-400/30 bg-amber-500/10 text-amber-300" :
+                                    "border-rose-400/30 bg-rose-500/10 text-rose-300"].join(" ")}>
+                                    {t.outcome}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-neutral-400">{t.rto_actual_min != null ? `${t.rto_actual_min}m` : "—"}</td>
+                                <td className="px-3 py-2 text-neutral-400">{t.tested_by}</td>
+                                <td className="px-3 py-2 text-neutral-400">{new Date(t.tested_at).toLocaleDateString()}</td>
+                                <td className="px-3 py-2 text-neutral-500 max-w-[120px] truncate" title={t.notes || ""}>{t.notes || "—"}</td>
+                                {can("admin") && (
+                                  <td className="px-3 py-2">
+                                    <button onClick={() => deleteRestoreTest(t.id)} className="rounded px-1.5 py-0.5 text-[10px] border border-rose-400/20 text-rose-400/60 hover:bg-rose-500/10">Del</button>
+                                  </td>
+                                )}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {/* Add restore test modal */}
+                    {showAddTestModal && (
+                      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+                        <div className="flex max-h-[90vh] w-full max-w-md flex-col rounded-2xl border border-emerald-400/20 bg-neutral-950 shadow-2xl">
+                          <div className="flex shrink-0 items-center justify-between border-b border-neutral-800 px-6 py-4">
+                            <div className="text-base font-semibold">Record Restore Test</div>
+                            <button onClick={() => setShowAddTestModal(false)} className="text-neutral-500 hover:text-white text-lg">✕</button>
+                          </div>
+                          <form onSubmit={saveRestoreTest} className="flex flex-col flex-1 overflow-hidden">
+                            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3 text-sm">
+                              <div>
+                                <label className="mb-1 block text-xs text-neutral-400">Service <span className="text-rose-400">*</span></label>
+                                <select value={addTestForm.service_id} onChange={e => setAddTestForm(f => ({ ...f, service_id: e.target.value }))}
+                                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none">
+                                  <option value="">Select…</option>
+                                  {recSimServices.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                </select>
+                              </div>
+                              <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                  <label className="mb-1 block text-xs text-neutral-400">Test type</label>
+                                  <select value={addTestForm.test_type} onChange={e => setAddTestForm(f => ({ ...f, test_type: e.target.value }))}
+                                    className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none">
+                                    <option value="dry_run">Dry run</option>
+                                    <option value="partial">Partial</option>
+                                    <option value="full">Full</option>
+                                  </select>
+                                </div>
+                                <div>
+                                  <label className="mb-1 block text-xs text-neutral-400">Outcome</label>
+                                  <select value={addTestForm.outcome} onChange={e => setAddTestForm(f => ({ ...f, outcome: e.target.value }))}
+                                    className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none">
+                                    <option value="passed">Passed</option>
+                                    <option value="partial">Partial</option>
+                                    <option value="failed">Failed</option>
+                                  </select>
+                                </div>
+                              </div>
+                              <div>
+                                <label className="mb-1 block text-xs text-neutral-400">Actual RTO <span className="text-neutral-600">(minutes, optional)</span></label>
+                                <input type="number" value={addTestForm.rto_actual_min} onChange={e => setAddTestForm(f => ({ ...f, rto_actual_min: e.target.value }))}
+                                  placeholder="e.g. 45"
+                                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none" />
+                              </div>
+                              <div>
+                                <label className="mb-1 block text-xs text-neutral-400">Notes <span className="text-neutral-600">(optional)</span></label>
+                                <textarea value={addTestForm.notes} onChange={e => setAddTestForm(f => ({ ...f, notes: e.target.value }))}
+                                  rows={2} placeholder="e.g. Restored from B2 to staging — data intact, took 38min"
+                                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-emerald-400/50 focus:outline-none resize-none" />
+                              </div>
+                              {addTestError && <div className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{addTestError}</div>}
+                            </div>
+                            <div className="flex justify-end gap-2 border-t border-neutral-800 px-6 py-4">
+                              <button type="button" onClick={() => setShowAddTestModal(false)}
+                                className="rounded-lg border border-neutral-700 px-4 py-2 text-xs text-neutral-400 hover:text-white">Cancel</button>
+                              <button type="submit" disabled={addTestSaving || !addTestForm.service_id}
+                                className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-xs text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50">
+                                {addTestSaving ? "Saving…" : "Save Test"}
+                              </button>
+                            </div>
+                          </form>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           {activeBoard === "Emergency" && (
             <div className="space-y-4">
               {/* Header */}

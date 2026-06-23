@@ -349,5 +349,38 @@ export async function initDb() {
     ON CONFLICT (action_type) DO NOTHING;
   `);
 
+  // v4.0 — Recovery Intelligence
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS restore_tests (
+      id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id      UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      service_id     UUID        NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+      backup_id      UUID        REFERENCES service_backups(id) ON DELETE SET NULL,
+      tested_by      TEXT        NOT NULL,
+      test_type      TEXT        NOT NULL DEFAULT 'dry_run'
+                                 CHECK (test_type IN ('dry_run','partial','full')),
+      outcome        TEXT        NOT NULL DEFAULT 'passed'
+                                 CHECK (outcome IN ('passed','failed','partial')),
+      rto_actual_min INT,
+      notes          TEXT,
+      tested_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS restore_tests_service_idx ON restore_tests (service_id, tested_at DESC);
+    CREATE INDEX IF NOT EXISTS restore_tests_tenant_idx  ON restore_tests (tenant_id, tested_at DESC);
+
+    CREATE TABLE IF NOT EXISTS recovery_simulations (
+      id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id     UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      scenario_type TEXT        NOT NULL,
+      target_type   TEXT        NOT NULL,
+      target_id     UUID,
+      target_name   TEXT,
+      run_by        TEXT        NOT NULL,
+      result        JSONB       NOT NULL,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS rec_sim_tenant_idx ON recovery_simulations (tenant_id, created_at DESC);
+  `);
+
   console.log("DB connected and schema ready");
 }
