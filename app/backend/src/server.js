@@ -54,8 +54,9 @@ const MCP_TOKEN =
   process.env.MCP_TOKEN;
 
 app.set("trust proxy", 1);
+app.disable("x-powered-by");
 app.use(cors({ origin: false }));
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 app.use(
   session({
@@ -116,3 +117,14 @@ app.use("/api/recovery",      recoveryRouter);
 app.use("/api/intelligence",  intelligenceRouter);
 
 app.listen(port, () => console.log(`PrivateNexus backend listening on ${port}`));
+
+// Global error handler — must be after all routes, 4 args required by Express
+// Sanitises unhandled 500s so stack traces never reach the client
+app.use((err, _req, res, _next) => {
+  const status = err.status || err.statusCode || 500;
+  console.error('[error]', err.message);
+  if (status >= 500) {
+    return res.status(500).json({ ok: false, error: 'Internal server error' });
+  }
+  res.status(status).json({ ok: false, error: err.message || 'Request error' });
+});
