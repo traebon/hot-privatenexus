@@ -285,5 +285,69 @@ export async function initDb() {
     ON CONFLICT (rule_key) DO NOTHING;
   `);
 
+  // v3.0 — Controlled Orchestration
+  await pool.query(`
+    ALTER TABLE services ADD COLUMN IF NOT EXISTS container_name TEXT;
+
+    CREATE TABLE IF NOT EXISTS action_policies (
+      id                  UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id           UUID    REFERENCES tenants(id) ON DELETE CASCADE,
+      action_type         TEXT    NOT NULL,
+      requires_approval   BOOLEAN NOT NULL DEFAULT FALSE,
+      elevation_required  TEXT,
+      blast_radius_check  BOOLEAN NOT NULL DEFAULT FALSE,
+      cooldown_secs       INT     NOT NULL DEFAULT 60,
+      max_per_hour        INT     NOT NULL DEFAULT 20,
+      enabled             BOOLEAN NOT NULL DEFAULT TRUE,
+      UNIQUE (action_type)
+    );
+
+    CREATE TABLE IF NOT EXISTS action_requests (
+      id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id     UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      service_id    UUID        REFERENCES services(id) ON DELETE SET NULL,
+      service_name  TEXT,
+      action_type   TEXT        NOT NULL,
+      params        JSONB       NOT NULL DEFAULT '{}',
+      status        TEXT        NOT NULL DEFAULT 'pending'
+                                CHECK (status IN ('pending','approved','rejected','executed','expired','failed')),
+      proposed_by   TEXT        NOT NULL,
+      proposed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      reviewed_by   TEXT,
+      reviewed_at   TIMESTAMPTZ,
+      review_note   TEXT,
+      executed_at   TIMESTAMPTZ,
+      result        JSONB,
+      expires_at    TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '24 hours'
+    );
+    CREATE INDEX IF NOT EXISTS action_req_tenant_status_idx ON action_requests (tenant_id, status, proposed_at DESC);
+    CREATE INDEX IF NOT EXISTS action_req_service_idx       ON action_requests (service_id);
+
+    CREATE TABLE IF NOT EXISTS deploy_rollback_points (
+      id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id       UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      service_id      UUID        REFERENCES services(id) ON DELETE SET NULL,
+      container_name  TEXT        NOT NULL,
+      previous_image  TEXT        NOT NULL,
+      deployed_image  TEXT        NOT NULL,
+      deployed_by     TEXT        NOT NULL,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS drp_service_idx ON deploy_rollback_points (service_id, created_at DESC);
+  `);
+
+  // Seed default action policies (idempotent)
+  await pool.query(`
+    INSERT INTO action_policies (action_type, requires_approval, elevation_required, blast_radius_check, cooldown_secs, max_per_hour) VALUES
+      ('container.restart', FALSE, 'operator',    TRUE,  60,   20),
+      ('container.stop',    TRUE,  'operator',    TRUE,  60,   10),
+      ('container.start',   FALSE, 'operator',    FALSE, 30,   20),
+      ('service.deploy',    TRUE,  'admin',       TRUE,  300,  5),
+      ('service.rollback',  FALSE, 'admin',       TRUE,  300,  5),
+      ('maintenance.enable',FALSE, 'admin',       FALSE, 300,  5),
+      ('emergency.stop-all',TRUE,  'superadmin',  FALSE, 3600, 2)
+    ON CONFLICT (action_type) DO NOTHING;
+  `);
+
   console.log("DB connected and schema ready");
 }

@@ -5,6 +5,8 @@ import { execSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { recordAudit } from "../auditLog.js";
 import { requireRole } from "../middleware/requireRole.js";
+import { getPool, HOT_TENANT_ID } from "../db.js";
+import { recordChange } from "./governance.js";
 
 export const actionsRouter = Router();
 
@@ -274,4 +276,387 @@ actionsRouter.post("/emergency", requireRole("admin"), async (req, res) => {
     recordAudit(req, `emergency.${action}`, null, "failure", { error: err.message });
     return res.status(500).json({ ok: false, action, error: err.message });
   }
+});
+
+const ROLE_LEVEL = { viewer: 0, operator: 1, admin: 2, superadmin: 3, breakglass: 4 };
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function userRoleLevel(req) {
+  return ROLE_LEVEL[req.session?.user?.role] ?? -1;
+}
+
+function requiredLevel(elevation) {
+  return ROLE_LEVEL[elevation] ?? 1;
+}
+
+async function blastRadiusCheck(serviceId) {
+  if (!serviceId) return { count: 0, hard: 0, affected: [] };
+  const { rows } = await getPool().query(
+    `SELECT sd.dep_type, s.name, s.slug, s.status
+     FROM service_dependencies sd
+     JOIN services s ON s.id = sd.downstream_id
+     WHERE sd.upstream_id = $1 AND sd.tenant_id = $2`,
+    [serviceId, HOT_TENANT_ID]
+  );
+  return {
+    count: rows.length,
+    hard:  rows.filter(r => r.dep_type === "hard").length,
+    affected: rows,
+  };
+}
+
+async function getPolicy(actionType) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM action_policies WHERE action_type = $1 AND enabled = TRUE LIMIT 1`,
+    [actionType]
+  );
+  return rows[0] || null;
+}
+
+function pullImage(dockerClient, image) {
+  return new Promise((resolve, reject) => {
+    dockerClient.pull(image, (err, stream) => {
+      if (err) return reject(err);
+      dockerClient.modem.followProgress(stream, err => err ? reject(err) : resolve());
+    });
+  });
+}
+
+async function executeDeployContainer(containerName, newImage) {
+  const container = docker.getContainer(containerName);
+  const info = await container.inspect();
+  const oldImage = info.Config.Image;
+
+  // Pull new image first (fail fast before touching running container)
+  await pullImage(docker, newImage);
+
+  // Build network config for recreation
+  const networkConfig = {};
+  for (const [netName, netInfo] of Object.entries(info.NetworkSettings.Networks || {})) {
+    networkConfig[netName] = { Aliases: netInfo.Aliases?.filter(a => a !== containerName) || [] };
+  }
+
+  // Stop and remove
+  if (info.State.Running) await container.stop({ t: 15 }).catch(() => {});
+  await container.remove({ force: true });
+
+  // Re-create with new image, preserving core config
+  const newContainer = await docker.createContainer({
+    name: containerName,
+    Image: newImage,
+    Env: info.Config.Env,
+    Labels: info.Config.Labels,
+    ExposedPorts: info.Config.ExposedPorts,
+    HostConfig: info.HostConfig,
+    NetworkingConfig: { EndpointsConfig: networkConfig },
+  });
+  await newContainer.start();
+  return { oldImage, newImage };
+}
+
+// ── Approval-aware /run v2 ────────────────────────────────────────────────────
+// Updated /run with blast-radius pre-check and policy lookup
+actionsRouter.post("/run/v2", async (req, res) => {
+  const { action, containerId, target, service_id, force } = req.body || {};
+  const id = containerId || target;
+
+  if (!action || !ALLOWED_ACTIONS.has(action))
+    return res.status(400).json({ ok: false, error: `Unsupported action: ${action}` });
+  if (!id)
+    return res.status(400).json({ ok: false, error: "containerId required" });
+  if (CONTAINER_BLOCKLIST.has(id)) {
+    recordAudit(req, `container.${action}.blocked`, id, "failure", { reason: "blocklisted" });
+    return res.status(403).json({ ok: false, error: `Container '${id}' cannot be controlled via this API` });
+  }
+  if (!CONTAINER_ALLOWLIST.has(id)) {
+    recordAudit(req, `container.${action}.blocked`, id, "failure", { reason: "not in allowlist" });
+    return res.status(403).json({ ok: false, error: `Container '${id}' is not in the approved action allowlist` });
+  }
+
+  const policy = await getPolicy(`container.${action}`);
+
+  // Elevation check
+  if (policy?.elevation_required && userRoleLevel(req) < requiredLevel(policy.elevation_required)) {
+    return res.status(403).json({ ok: false, error: `Action requires ${policy.elevation_required} role or higher` });
+  }
+
+  // Blast-radius check
+  if (policy?.blast_radius_check && service_id && !force) {
+    const br = await blastRadiusCheck(service_id);
+    if (br.hard > 0) {
+      return res.status(409).json({
+        ok: false,
+        blast_radius: true,
+        hard_deps: br.hard,
+        affected: br.affected,
+        error: `${br.hard} hard downstream dependenc${br.hard === 1 ? "y" : "ies"} will be affected. Pass force:true to proceed.`,
+      });
+    }
+  }
+
+  // Cooldown (in-memory — same as original /run)
+  const cooldownMs = (policy?.cooldown_secs ?? 60) * 1000;
+  const lastTs = actionCooldowns.get(id) || 0;
+  const elapsed = Date.now() - lastTs;
+  if (elapsed < cooldownMs) {
+    const retryAfterMs = cooldownMs - elapsed;
+    return res.status(429).json({ ok: false, error: `Cooldown active — wait ${Math.ceil(retryAfterMs / 1000)}s`, retryAfterMs });
+  }
+  actionCooldowns.set(id, Date.now());
+
+  // Approval required → queue instead of execute
+  if (policy?.requires_approval) {
+    const { rows } = await getPool().query(
+      `INSERT INTO action_requests (tenant_id, action_type, params, proposed_by)
+       VALUES ($1, $2, $3, $4) RETURNING id`,
+      [HOT_TENANT_ID, `container.${action}`, JSON.stringify({ containerId: id, service_id }), req.session?.user?.username || "unknown"]
+    );
+    recordAudit(req, `container.${action}.queued`, id, "success", { requestId: rows[0].id });
+    return res.status(202).json({ ok: true, queued: true, requestId: rows[0].id, message: "Action queued for approval" });
+  }
+
+  // Execute directly
+  try {
+    const container = docker.getContainer(id);
+    if (action === "start") await container.start();
+    else if (action === "stop") await container.stop({ t: 10 });
+    else if (action === "restart") await container.restart({ t: 10 });
+    recordAudit(req, `container.${action}`, id, "success");
+    res.json({ ok: true, action, containerId: id, ts: new Date().toISOString() });
+  } catch (err) {
+    recordAudit(req, `container.${action}`, id, "failure", { error: err.message });
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── Action requests (approval workflow) ─────────────────────────────────────
+
+// GET /api/actions/requests?status=pending
+actionsRouter.get("/requests", requireRole("operator"), async (req, res) => {
+  const status = req.query.status;
+  const params = [HOT_TENANT_ID];
+  let where = "tenant_id = $1";
+  if (status) { params.push(status); where += ` AND status = $${params.length}`; }
+  try {
+    const { rows } = await getPool().query(
+      `SELECT * FROM action_requests WHERE ${where} ORDER BY proposed_at DESC LIMIT 100`,
+      params
+    );
+    res.json({ ok: true, requests: rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/actions/requests — operator proposes
+actionsRouter.post("/requests", requireRole("operator"), async (req, res) => {
+  const { action_type, service_id, params = {} } = req.body;
+  if (!action_type) return res.status(400).json({ ok: false, error: "action_type required" });
+
+  // Get service name if service_id provided
+  let service_name = null;
+  if (service_id) {
+    const { rows } = await getPool().query("SELECT name FROM services WHERE id = $1", [service_id]);
+    service_name = rows[0]?.name || null;
+  }
+
+  // Blast-radius check (informational — stored in params, not blocking here)
+  const br = service_id ? await blastRadiusCheck(service_id) : { count: 0, hard: 0, affected: [] };
+
+  try {
+    const { rows } = await getPool().query(
+      `INSERT INTO action_requests (tenant_id, service_id, service_name, action_type, params, proposed_by)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [HOT_TENANT_ID, service_id || null, service_name, action_type,
+       JSON.stringify({ ...params, blast_radius: br }), req.session?.user?.username || "unknown"]
+    );
+    recordAudit(req, "action.request.propose", action_type, "success", { id: rows[0].id });
+    res.status(201).json({ ok: true, request: rows[0], blast_radius: br });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/actions/requests/:id/approve — admin executes the action
+actionsRouter.post("/requests/:id/approve", requireRole("admin"), async (req, res) => {
+  const db = getPool();
+  const { rows } = await db.query(
+    "SELECT * FROM action_requests WHERE id = $1 AND tenant_id = $2",
+    [req.params.id, HOT_TENANT_ID]
+  );
+  const actionReq = rows[0];
+  if (!actionReq) return res.status(404).json({ ok: false, error: "Request not found" });
+  if (actionReq.status !== "pending")
+    return res.status(409).json({ ok: false, error: `Request is ${actionReq.status}, not pending` });
+  if (new Date(actionReq.expires_at) < new Date())
+    return res.status(410).json({ ok: false, error: "Request expired" });
+
+  // Mark approved
+  await db.query(
+    `UPDATE action_requests SET status='approved', reviewed_by=$1, reviewed_at=NOW(), review_note=$2 WHERE id=$3`,
+    [req.session?.user?.username || "unknown", req.body.note || null, req.params.id]
+  );
+
+  // Execute the action
+  let result = null;
+  let finalStatus = "executed";
+  try {
+    const p = actionReq.params || {};
+
+    if (actionReq.action_type === "service.deploy") {
+      const { container_name, new_image } = p;
+      const { oldImage, newImage } = await executeDeployContainer(container_name, new_image);
+      result = { oldImage, newImage };
+      await db.query(
+        `INSERT INTO deploy_rollback_points (tenant_id, service_id, container_name, previous_image, deployed_image, deployed_by)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [HOT_TENANT_ID, actionReq.service_id, container_name, oldImage, newImage, req.session?.user?.username || "unknown"]
+      );
+      recordChange(HOT_TENANT_ID, actionReq.service_id, actionReq.service_name, "service_deployed",
+        req.session?.user?.username || "unknown",
+        `Deployed '${container_name}' → ${newImage} (was ${oldImage})`);
+
+    } else if (actionReq.action_type === "container.restart") {
+      await docker.getContainer(p.containerId).restart({ t: 10 });
+      result = { containerId: p.containerId };
+
+    } else if (actionReq.action_type === "container.stop") {
+      await docker.getContainer(p.containerId).stop({ t: 10 });
+      result = { containerId: p.containerId };
+
+    } else {
+      result = { message: "No executor registered for this action_type" };
+    }
+
+    recordAudit(req, `action.${actionReq.action_type}.executed`, actionReq.service_name || actionReq.action_type, "success");
+  } catch (err) {
+    finalStatus = "failed";
+    result = { error: err.message };
+    recordAudit(req, `action.${actionReq.action_type}.failed`, actionReq.action_type, "failure", { error: err.message });
+  }
+
+  await db.query(
+    `UPDATE action_requests SET status=$1, executed_at=NOW(), result=$2 WHERE id=$3`,
+    [finalStatus, JSON.stringify(result), req.params.id]
+  );
+
+  res.json({ ok: finalStatus === "executed", status: finalStatus, result });
+});
+
+// POST /api/actions/requests/:id/reject — admin rejects
+actionsRouter.post("/requests/:id/reject", requireRole("admin"), async (req, res) => {
+  const { rows } = await getPool().query(
+    "SELECT * FROM action_requests WHERE id = $1 AND tenant_id = $2",
+    [req.params.id, HOT_TENANT_ID]
+  );
+  if (!rows[0]) return res.status(404).json({ ok: false, error: "Request not found" });
+  if (rows[0].status !== "pending")
+    return res.status(409).json({ ok: false, error: `Request is ${rows[0].status}, not pending` });
+  await getPool().query(
+    `UPDATE action_requests SET status='rejected', reviewed_by=$1, reviewed_at=NOW(), review_note=$2 WHERE id=$3`,
+    [req.session?.user?.username || "unknown", req.body.reason || null, req.params.id]
+  );
+  recordAudit(req, "action.request.reject", rows[0].action_type, "success", { id: req.params.id });
+  res.json({ ok: true, status: "rejected" });
+});
+
+// POST /api/actions/deploy — direct deploy (admin only, still checks blast-radius)
+actionsRouter.post("/deploy", requireRole("admin"), async (req, res) => {
+  const { service_id, container_name, new_image, force } = req.body;
+  if (!container_name || !new_image)
+    return res.status(400).json({ ok: false, error: "container_name and new_image required" });
+
+  // Blast-radius check
+  if (service_id && !force) {
+    const br = await blastRadiusCheck(service_id);
+    if (br.hard > 0) {
+      return res.status(409).json({
+        ok: false, blast_radius: true, hard_deps: br.hard, affected: br.affected,
+        error: `${br.hard} hard downstream dependenc${br.hard === 1 ? "y" : "ies"} affected. Pass force:true to proceed.`,
+      });
+    }
+  }
+
+  // Fetch service name
+  let service_name = null;
+  if (service_id) {
+    const { rows } = await getPool().query("SELECT name FROM services WHERE id = $1", [service_id]);
+    service_name = rows[0]?.name;
+  }
+
+  try {
+    const { oldImage, newImage } = await executeDeployContainer(container_name, new_image);
+    await getPool().query(
+      `INSERT INTO deploy_rollback_points (tenant_id, service_id, container_name, previous_image, deployed_image, deployed_by)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [HOT_TENANT_ID, service_id || null, container_name, oldImage, newImage, req.session?.user?.username || "unknown"]
+    );
+    recordAudit(req, "service.deploy", container_name, "success", { oldImage, newImage });
+    recordChange(HOT_TENANT_ID, service_id, service_name, "service_deployed",
+      req.session?.user?.username || "unknown",
+      `Deployed '${container_name}' → ${newImage} (was: ${oldImage})`);
+    res.json({ ok: true, oldImage, newImage, container: container_name });
+  } catch (err) {
+    recordAudit(req, "service.deploy", container_name, "failure", { error: err.message });
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/actions/rollback — restore previous image (admin only)
+actionsRouter.post("/rollback", requireRole("admin"), async (req, res) => {
+  const { service_id, container_name, rollback_point_id, force } = req.body;
+  if (!container_name) return res.status(400).json({ ok: false, error: "container_name required" });
+
+  // Find rollback point
+  const pointQuery = rollback_point_id
+    ? "SELECT * FROM deploy_rollback_points WHERE id = $1 AND container_name = $2"
+    : "SELECT * FROM deploy_rollback_points WHERE container_name = $1 ORDER BY created_at DESC LIMIT 1";
+  const pointParams = rollback_point_id ? [rollback_point_id, container_name] : [container_name];
+  const { rows: points } = await getPool().query(pointQuery, pointParams);
+  if (!points[0]) return res.status(404).json({ ok: false, error: "No rollback point found for this container" });
+  const point = points[0];
+
+  // Blast-radius check
+  const svcId = service_id || point.service_id;
+  if (svcId && !force) {
+    const br = await blastRadiusCheck(svcId);
+    if (br.hard > 0) {
+      return res.status(409).json({
+        ok: false, blast_radius: true, hard_deps: br.hard, affected: br.affected,
+        error: `${br.hard} hard downstream dependenc${br.hard === 1 ? "y" : "ies"} affected. Pass force:true to proceed.`,
+      });
+    }
+  }
+
+  try {
+    const { oldImage, newImage } = await executeDeployContainer(container_name, point.previous_image);
+    recordAudit(req, "service.rollback", container_name, "success", { restoredImage: point.previous_image });
+    recordChange(HOT_TENANT_ID, svcId, null, "service_rolled_back",
+      req.session?.user?.username || "unknown",
+      `Rolled back '${container_name}' → ${point.previous_image}`);
+    res.json({ ok: true, restoredImage: point.previous_image, container: container_name });
+  } catch (err) {
+    recordAudit(req, "service.rollback", container_name, "failure", { error: err.message });
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/actions/rollback-points/:container_name — list rollback points
+actionsRouter.get("/rollback-points/:container", requireRole("admin"), async (req, res) => {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT * FROM deploy_rollback_points
+       WHERE container_name = $1 AND tenant_id = $2
+       ORDER BY created_at DESC LIMIT 10`,
+      [req.params.container, HOT_TENANT_ID]
+    );
+    res.json({ ok: true, points: rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/actions/policies — list action policies
+actionsRouter.get("/policies", requireRole("admin"), async (_req, res) => {
+  try {
+    const { rows } = await getPool().query(
+      "SELECT * FROM action_policies ORDER BY action_type"
+    );
+    res.json({ ok: true, policies: rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
