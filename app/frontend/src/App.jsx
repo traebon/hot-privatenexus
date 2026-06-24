@@ -5,11 +5,14 @@ class ErrorBoundary extends React.Component {
   static getDerivedStateFromError(e) { return { error: e }; }
   render() {
     if (this.state.error) {
+      // Never expose stack traces in production — they leak internal file paths and component tree.
+      const isDev = typeof import.meta !== 'undefined' && import.meta.env?.DEV;
       return React.createElement('div', {
         style: { padding: 32, color: '#f87171', fontFamily: 'monospace', background: '#111', minHeight: '100vh' }
-      }, React.createElement('h2', null, 'React crash'),
-         React.createElement('pre', null, String(this.state.error?.message || this.state.error)),
-         React.createElement('pre', null, String(this.state.error?.stack || '')));
+      }, React.createElement('h2', null, 'Something went wrong'),
+         React.createElement('p', null, 'An unexpected error occurred. Please refresh the page or contact support.'),
+         isDev && React.createElement('pre', { style: { marginTop: 16, fontSize: 12, opacity: 0.7 } },
+           String(this.state.error?.stack || this.state.error?.message || this.state.error)));
     }
     return this.props.children;
   }

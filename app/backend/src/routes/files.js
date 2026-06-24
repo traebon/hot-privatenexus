@@ -810,6 +810,17 @@ filesRouter.post("/register", requireRole("admin"), async (req, res) => {
   if (!id || !label || !filePath || !stack) {
     return res.status(400).json({ ok: false, error: "id, label, path, stack are required" });
   }
+  // T15-1: id must be a safe slug — same pattern as assertSafeId() in drafts.js
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(id)) {
+    return res.status(400).json({ ok: false, error: "id must be alphanumeric with hyphens/underscores, max 128 chars" });
+  }
+  // T15-2: validate applyStrategy against known handlers
+  if (applyStrategy !== null && applyStrategy !== undefined) {
+    const { KNOWN_STRATEGIES } = await import("../fileApply.js");
+    if (!KNOWN_STRATEGIES.includes(applyStrategy)) {
+      return res.status(400).json({ ok: false, error: `Unknown applyStrategy — must be one of: ${KNOWN_STRATEGIES.join(", ")}` });
+    }
+  }
   const resolvedPath = path.resolve(filePath);
   const BLOCKED_PREFIXES = ["/run/secrets", "/opt/privatenexus/secrets", "/opt/privatenexus/app", "/root", "/etc", "/proc", "/sys"];
   if (BLOCKED_PREFIXES.some((p) => resolvedPath === p || resolvedPath.startsWith(p + "/"))) {
