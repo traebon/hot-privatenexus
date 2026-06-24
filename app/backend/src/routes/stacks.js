@@ -1,5 +1,6 @@
 import { Router } from "express";
 import Docker from "dockerode";
+import { requireRole } from "../middleware/requireRole.js";
 
 export const stacksRouter = Router();
 
@@ -25,7 +26,7 @@ function formatContainer(c) {
 }
 
 // GET /api/stacks — all containers grouped by compose project
-stacksRouter.get("/", async (_req, res) => {
+stacksRouter.get("/", requireRole("viewer"), async (_req, res) => {
   try {
     const raw = await docker.listContainers({ all: true });
     const containers = raw.map(formatContainer);
@@ -54,7 +55,7 @@ stacksRouter.get("/", async (_req, res) => {
 });
 
 // GET /api/stacks/:id — single container inspect summary
-stacksRouter.get("/:id", async (req, res) => {
+stacksRouter.get("/:id", requireRole("viewer"), async (req, res) => {
   try {
     const container = docker.getContainer(req.params.id);
     const info = await container.inspect();
@@ -87,11 +88,12 @@ stacksRouter.get("/:id", async (req, res) => {
         name: info.HostConfig?.RestartPolicy?.Name || "no",
         maxRetry: info.HostConfig?.RestartPolicy?.MaximumRetryCount || 0,
       },
+      // src (host path) omitted — would expose secret file locations on the host
       mounts: (info.Mounts || []).map((m) => ({
         type: m.Type,
-        src: m.Source,
         dst: m.Destination,
         mode: m.Mode,
+        hostMounted: m.Type === "bind",
       })),
       mountCount: (info.Mounts || []).length,
       networks: Object.keys(info.NetworkSettings?.Networks || {}),
@@ -103,8 +105,8 @@ stacksRouter.get("/:id", async (req, res) => {
   }
 });
 
-// GET /api/stacks/:id/logs — last N lines
-stacksRouter.get("/:id/logs", async (req, res) => {
+// GET /api/stacks/:id/logs — last N lines (operator+ only — logs may contain credentials/tokens)
+stacksRouter.get("/:id/logs", requireRole("operator"), async (req, res) => {
   const tail = Math.min(Number(req.query.tail) || 100, 500);
   try {
     const container = docker.getContainer(req.params.id);

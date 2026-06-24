@@ -46,6 +46,11 @@ logsRouter.get("/query", requireRole("viewer"), async (req, res) => {
 
   if (!source) return res.status(400).json({ ok: false, error: "source is required" });
 
+  // Sanitize source: only allow hostname/container-name chars to prevent LogQL injection
+  if (!/^[a-zA-Z0-9._-]+$/.test(source)) {
+    return res.status(400).json({ ok: false, error: "invalid source" });
+  }
+
   const selector = type === "container"
     ? `{container="/${source}"}`
     : `{job="syslog", host="${source}"}`;
@@ -80,7 +85,11 @@ logsRouter.get("/query", requireRole("viewer"), async (req, res) => {
 
 // Legacy: GET /api/logs/:container — used by Stacks drawer
 logsRouter.get("/:container", async (req, res) => {
-  const container = `/${req.params.container.replace(/^\//, "")}`;
+  const rawName = req.params.container.replace(/^\//, "");
+  if (!/^[a-zA-Z0-9._-]+$/.test(rawName)) {
+    return res.status(400).json({ error: "invalid container name" });
+  }
+  const container = `/${rawName}`;
   const end   = Date.now() * 1_000_000;
   const start = end - 3_600_000_000_000;
 

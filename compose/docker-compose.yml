@@ -107,7 +107,7 @@ services:
       - db_password
       - mcp_token
     ports:
-      - "10.10.60.105:3002:3002"
+      - "127.0.0.1:3002:3002"
     depends_on:
       privatenexus-db:
         condition: service_healthy
