@@ -218,7 +218,7 @@ dependenciesRouter.post("/", requireRole("operator"), async (req, res) => {
     return res.status(400).json({ ok: false, error: "upstream_id and downstream_id required" });
   if (upstream_id === downstream_id)
     return res.status(400).json({ ok: false, error: "A service cannot depend on itself" });
-  const VALID_DEP_TYPES = ["hard", "soft"];
+  const VALID_DEP_TYPES = ["hard", "soft", "data", "auth", "network"];
   if (!VALID_DEP_TYPES.includes(dep_type))
     return res.status(400).json({ ok: false, error: `dep_type must be one of: ${VALID_DEP_TYPES.join(", ")}` });
 

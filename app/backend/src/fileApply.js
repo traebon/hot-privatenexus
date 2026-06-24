@@ -1,24 +1,22 @@
 import path from "path";
 import { spawnSync } from "child_process";
 
-/**
- * Whitelisted apply strategies.
- * All commands are constructed from registry data only — no user input reaches exec.
- * Returns { ok: boolean, output: string, stdout: string, stderr: string, exitCode: number }
- */
+// Command array form — never shell: true, never interpolated strings.
+// All args are passed as discrete elements to avoid shell injection.
 const HANDLERS = {
   "compose-up": (applyPath) => {
     const dir = path.dirname(applyPath);
-    return run(`docker compose -f "${applyPath}" up -d`, { cwd: dir, timeout: 90000 });
+    return run(["docker", "compose", "-f", applyPath, "up", "-d"], { cwd: dir, timeout: 90000 });
   },
   "caddy-reload": (applyPath) => {
-    return run(`caddy reload --config "${applyPath}"`, { timeout: 30000 });
+    return run(["caddy", "reload", "--config", applyPath], { timeout: 30000 });
   },
 };
 
-function run(cmd, opts = {}) {
+function run(argv, opts = {}) {
   const { timeout = 60000, cwd } = opts;
-  const result = spawnSync(cmd, [], { shell: true, encoding: "utf8", timeout, cwd });
+  const [cmd, ...args] = argv;
+  const result = spawnSync(cmd, args, { shell: false, encoding: "utf8", timeout, cwd });
   const stdout = (result.stdout || "").trim();
   const stderr = (result.stderr || "").trim();
   const exitCode = result.status ?? -1;

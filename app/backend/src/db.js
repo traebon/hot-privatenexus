@@ -448,5 +448,23 @@ export async function initDb() {
     ON CONFLICT (signal_type, action_type) DO NOTHING;
   `);
 
+  // Extend restore_tests.test_type CHECK to include 'tabletop' (idempotent migration)
+  await pool.query(
+    `ALTER TABLE restore_tests DROP CONSTRAINT IF EXISTS restore_tests_test_type_check`
+  );
+  await pool.query(
+    `ALTER TABLE restore_tests ADD CONSTRAINT restore_tests_test_type_check
+       CHECK (test_type IN ('dry_run', 'partial', 'full', 'tabletop'))`
+  );
+
+  // Align service_dependencies.dep_type CHECK with application VALID_DEP_TYPES (idempotent)
+  await pool.query(
+    `ALTER TABLE service_dependencies DROP CONSTRAINT IF EXISTS service_dependencies_dep_type_check`
+  );
+  await pool.query(
+    `ALTER TABLE service_dependencies ADD CONSTRAINT service_dependencies_dep_type_check
+       CHECK (dep_type IN ('hard', 'soft', 'data', 'auth', 'network'))`
+  );
+
   console.log("DB connected and schema ready");
 }
