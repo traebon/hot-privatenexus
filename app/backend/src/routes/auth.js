@@ -43,7 +43,8 @@ authRouter.get("/login", async (req, res) => {
     );
     res.redirect(client.authorizationUrl({ scope: "openid profile email", state, nonce }));
   } catch (err) {
-    res.status(500).send(`Auth init failed: ${err.message}`);
+    console.error("[auth] login error:", err.message);
+    res.status(500).send("Authentication failed. Please try again.");
   }
 });
 
@@ -72,11 +73,18 @@ authRouter.get("/callback", async (req, res) => {
     recordAudit(req, "auth.login", null, "success");
     res.redirect("/");
   } catch (err) {
-    res.status(500).send(`Auth callback failed: ${err.message}`);
+    console.error("[auth] callback error:", err.message);
+    res.status(500).send("Authentication failed. Please try again.");
   }
 });
 
 authRouter.get("/logout", (req, res) => {
+  const origin = req.headers.origin || "";
+  const referer = req.headers.referer || "";
+  const appOrigin = new URL(POST_LOGOUT_URI).origin;
+  if ((origin && origin !== appOrigin) || (referer && !referer.startsWith(appOrigin))) {
+    return res.status(403).send("Logout CSRF check failed");
+  }
   const userSnap = req.session?.user ? { ...req.session.user, role: null } : null;
   const idTokenHint = req.session?.idToken || "";
   if (userSnap) recordAudit(req, "auth.logout", null, "success", null, userSnap);

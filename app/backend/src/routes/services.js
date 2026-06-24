@@ -43,7 +43,7 @@ function validate(body) {
 }
 
 // GET /api/services?category=&workspace_id=&archived=false
-servicesRouter.get("/", async (req, res) => {
+servicesRouter.get("/", requireRole("viewer"), async (req, res) => {
   try {
     const conditions = ["s.tenant_id = $1"];
     const params = [HOT_TENANT_ID];
