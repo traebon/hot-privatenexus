@@ -107,7 +107,8 @@ app.use((req, _res, next) => {
   if (tok && MCP_TOKEN && tok === MCP_TOKEN) {
     req.session.user = {
       sub: "mcp-server",
-      preferred_username: "mcp-server",
+      username: "mcp-server",
+      name: "mcp-server",
       roles: ["operator"],
     };
   }

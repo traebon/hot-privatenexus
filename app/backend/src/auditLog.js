@@ -4,7 +4,7 @@ import { userRole } from "./middleware/requireRole.js";
 export function recordAudit(req, action, target, outcome, detail = null, userOverride = null) {
   const user = userOverride ?? req.session?.user ?? {};
   const role = userOverride ? (userOverride.role ?? "unknown") : (userRole(req.session) ?? "unknown");
-  const ip   = req.headers?.["x-real-ip"] || req.ip || null;
+  const ip   = req.ip || null;
 
   getPool()
     .query(

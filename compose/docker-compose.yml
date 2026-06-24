@@ -100,6 +100,7 @@ services:
       - discovery_agent_token
       - mcp_token
       - redis_password
+      - pdns_api_key
     ports:
       - "127.0.0.1:${PRIVATENEXUS_BACKEND_PORT:-3001}:3001"
     volumes:
@@ -168,6 +169,8 @@ networks:
 secrets:
   redis_password:
     file: ../secrets/redis_password.txt
+  pdns_api_key:
+    file: ../secrets/pdns_api_key.txt
   db_password:
     file: ../secrets/db_password.txt
   keycloak_client_secret:

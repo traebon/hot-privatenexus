@@ -11,7 +11,7 @@ export const adminRouter = Router();
 const docker = getDocker();
 
 // GET /api/admin/backup — real schedule info (static config, not live state)
-adminRouter.get("/backup", (_req, res) => {
+adminRouter.get("/backup", requireRole("viewer"), (_req, res) => {
   res.json({
     schedule:    "Daily at 02:00 UTC",
     destination: "Backblaze B2 (encrypted) + Wasabi EU-Central-1",
@@ -33,7 +33,7 @@ adminRouter.post("/backup/run", requireRole("admin"), (req, res) => {
 });
 
 // GET /api/admin/network — real network interfaces via Node os module + Docker networks
-adminRouter.get("/network", async (_req, res) => {
+adminRouter.get("/network", requireRole("operator"), async (_req, res) => {
   try {
     const ifaces = os.networkInterfaces();
     const interfaces = Object.entries(ifaces).map(([name, addrs]) => ({
@@ -41,13 +41,16 @@ adminRouter.get("/network", async (_req, res) => {
       addresses: (addrs || []).map((a) => ({ address: a.address, family: a.family, internal: a.internal })),
     }));
 
-    const dockerNets = await docker.listNetworks();
-    const networks = dockerNets.map((n) => ({
-      name:   n.Name,
-      driver: n.Driver,
-      scope:  n.Scope,
-      subnet: n.IPAM?.Config?.[0]?.Subnet || "—",
-    }));
+    let networks = [];
+    try {
+      const dockerNets = await docker.listNetworks();
+      networks = dockerNets.map((n) => ({
+        name:   n.Name,
+        driver: n.Driver,
+        scope:  n.Scope,
+        subnet: n.IPAM?.Config?.[0]?.Subnet || "—",
+      }));
+    } catch {}
 
     res.json({ ok: true, interfaces, networks, ts: new Date().toISOString() });
   } catch (err) {

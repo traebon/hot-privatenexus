@@ -214,24 +214,19 @@ governanceRouter.delete("/exceptions/:id", requireRole("admin"), async (req, res
 governanceRouter.get("/change-records", requireRole("viewer"), async (req, res) => {
   const limit  = Math.min(Number(req.query.limit  || 50), 200);
   const offset = Number(req.query.offset || 0);
-  const params = [HOT_TENANT_ID, limit, offset];
-  let where = "tenant_id = $1";
+  const conditions = ["tenant_id = $1"];
+  const params = [HOT_TENANT_ID];
   if (req.query.service_id) {
-    params.splice(2, 0, req.query.service_id);
-    where += ` AND service_id = $3`;
-    params[2] = req.query.service_id;
-    // re-index: limit=$4, offset=$5
-    const { rows } = await getPool().query(
-      `SELECT * FROM change_records WHERE ${where}
-       ORDER BY created_at DESC LIMIT $4 OFFSET $5`,
-      params
-    ).catch(err => { throw err; });
-    return res.json({ ok: true, records: rows });
+    params.push(req.query.service_id);
+    conditions.push(`service_id = $${params.length}`);
   }
+  params.push(limit, offset);
+  const limitIdx  = params.length - 1;
+  const offsetIdx = params.length;
   try {
     const { rows } = await getPool().query(
-      `SELECT * FROM change_records WHERE ${where}
-       ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+      `SELECT * FROM change_records WHERE ${conditions.join(" AND ")}
+       ORDER BY created_at DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
       params
     );
     res.json({ ok: true, records: rows });

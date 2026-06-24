@@ -1,10 +1,13 @@
 import express from "express";
+import { readFileSync } from "fs";
 import { requireRole } from "../middleware/requireRole.js";
 
 export const dnsRouter = express.Router();
 
 const PDNS_URL = process.env.PDNS_URL || "http://10.10.0.1:8081";
-const PDNS_KEY = process.env.PDNS_API_KEY || "pdnsKj7xM9pL2vR5n";
+function readSecret(p) { try { return readFileSync(p, "utf8").trim(); } catch { return null; } }
+const PDNS_KEY = readSecret("/run/secrets/pdns_api_key") ?? process.env.PDNS_API_KEY;
+if (!PDNS_KEY) throw new Error("PDNS_API_KEY secret not configured");
 const PDNS_BASE = `${PDNS_URL}/api/v1/servers/localhost`;
 
 async function pdns(method, path, body) {
