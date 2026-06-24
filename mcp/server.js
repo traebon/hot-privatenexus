@@ -476,7 +476,7 @@ function jsonResp(res, body, status = 200) {
 const server = http.createServer(async (req, res) => {
   // Auth
   const auth = req.headers.authorization || "";
-  if (TOKEN && auth !== `Bearer ${TOKEN}`) {
+  if (!TOKEN || auth !== `Bearer ${TOKEN}`) {
     return jsonResp(res, { error: "Unauthorized" }, 401);
   }
 

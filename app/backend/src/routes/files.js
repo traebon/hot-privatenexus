@@ -35,7 +35,7 @@ filesRouter.get("/", (req, res) => {
 });
 
 // GET /api/files/read?id=<id> — read whitelisted file + any existing draft
-filesRouter.get("/read", (req, res) => {
+filesRouter.get("/read", requireRole("operator"), (req, res) => {
   const { id } = req.query;
 
   if (!id || typeof id !== "string") {
@@ -107,7 +107,7 @@ filesRouter.post("/draft", requireRole("operator"), (req, res) => {
 });
 
 // POST /api/files/validate — validate content without writing
-filesRouter.post("/validate", (req, res) => {
+filesRouter.post("/validate", requireRole("operator"), (req, res) => {
   const { id, content } = req.body || {};
 
   if (!id || typeof id !== "string") {
@@ -243,7 +243,7 @@ filesRouter.post("/apply", requireRole("admin"), (req, res) => {
 });
 
 // GET /api/files/backups?id=<fileId> — list backups for a registered file, newest first
-filesRouter.get("/backups", (req, res) => {
+filesRouter.get("/backups", requireRole("operator"), (req, res) => {
   const { id } = req.query;
   if (!id || typeof id !== "string") {
     return res.status(400).json({ ok: false, error: "File id is required" });
@@ -257,7 +257,7 @@ filesRouter.get("/backups", (req, res) => {
 });
 
 // GET /api/files/backups/read?id=<fileId>&file=<fileName> — read a single backup
-filesRouter.get("/backups/read", (req, res) => {
+filesRouter.get("/backups/read", requireRole("operator"), (req, res) => {
   const { id, file: fileName } = req.query;
   if (!id || typeof id !== "string") {
     return res.status(400).json({ ok: false, error: "File id is required" });
@@ -578,7 +578,7 @@ filesRouter.post("/restore-and-apply", requireRole("admin"), (req, res) => {
 });
 
 // GET /api/files/backups/known-good?id=<fileId> — return LKG entry for a file
-filesRouter.get("/backups/known-good", (req, res) => {
+filesRouter.get("/backups/known-good", requireRole("operator"), (req, res) => {
   const { id } = req.query;
   if (!id || typeof id !== "string") {
     return res.status(400).json({ ok: false, error: "File id is required" });
@@ -618,7 +618,7 @@ filesRouter.post("/backups/mark-known-good", requireRole("operator"), (req, res)
 });
 
 // GET /api/files/backups/labels?id=<fileId> — all labels for a file's backups
-filesRouter.get("/backups/labels", (req, res) => {
+filesRouter.get("/backups/labels", requireRole("viewer"), (req, res) => {
   const { id } = req.query;
   if (!id || typeof id !== "string") {
     return res.status(400).json({ ok: false, error: "File id is required" });
@@ -660,7 +660,7 @@ filesRouter.post("/backups/label", requireRole("operator"), (req, res) => {
 });
 
 // POST /api/files/backups/prune-preview — compute prune candidates without deleting
-filesRouter.post("/backups/prune-preview", (req, res) => {
+filesRouter.post("/backups/prune-preview", requireRole("operator"), (req, res) => {
   const { id, mode, keep, days } = req.body || {};
   if (!id || typeof id !== "string") {
     return res.status(400).json({ ok: false, error: "File id is required" });
@@ -733,7 +733,7 @@ filesRouter.post("/backups/prune", requireRole("admin"), (req, res) => {
 });
 
 // POST /api/files/restore-plan — generate a restore plan without touching the filesystem
-filesRouter.post("/restore-plan", (req, res) => {
+filesRouter.post("/restore-plan", requireRole("operator"), (req, res) => {
   const { id, file: backupFileName } = req.body || {};
   if (!id || typeof id !== "string") {
     return res.status(400).json({ ok: false, error: "File id is required" });
@@ -749,7 +749,7 @@ filesRouter.post("/restore-plan", (req, res) => {
 });
 
 // GET /api/files/restore-log[?fileId=<id>] — return restore history
-filesRouter.get("/restore-log", (req, res) => {
+filesRouter.get("/restore-log", requireRole("viewer"), (req, res) => {
   const { fileId } = req.query;
   const fileIdStr = typeof fileId === "string" && fileId.length > 0 ? fileId : undefined;
   try {
@@ -762,7 +762,7 @@ filesRouter.get("/restore-log", (req, res) => {
 });
 
 // GET /api/files/known-good-summary — LKG trust state for all registered files
-filesRouter.get("/known-good-summary", (req, res) => {
+filesRouter.get("/known-good-summary", requireRole("viewer"), (req, res) => {
   const files = listRegisteredFiles();
   const summary = {};
 
@@ -791,7 +791,7 @@ filesRouter.get("/known-good-summary", (req, res) => {
 });
 
 // GET /api/files/apply-log[?fileId=<id>] — return apply history
-filesRouter.get("/apply-log", (req, res) => {
+filesRouter.get("/apply-log", requireRole("viewer"), (req, res) => {
   const { fileId } = req.query;
   const fileIdStr = typeof fileId === "string" && fileId.length > 0 ? fileId : undefined;
   try {
@@ -810,11 +810,19 @@ filesRouter.post("/register", requireRole("admin"), async (req, res) => {
   if (!id || !label || !filePath || !stack) {
     return res.status(400).json({ ok: false, error: "id, label, path, stack are required" });
   }
+  const resolvedPath = require("path").resolve(filePath);
+  const BLOCKED_PREFIXES = ["/run/secrets", "/opt/privatenexus/secrets", "/root", "/etc", "/proc", "/sys"];
+  if (BLOCKED_PREFIXES.some((p) => resolvedPath === p || resolvedPath.startsWith(p + "/"))) {
+    return res.status(403).json({ ok: false, error: "Path is in a restricted directory" });
+  }
+  if (!resolvedPath.startsWith("/opt/")) {
+    return res.status(403).json({ ok: false, error: "Registered paths must be under /opt/" });
+  }
   try {
     const { registerFile } = await import("../filesRegistry.js");
     const entry = registerFile({
-      id, label, path: filePath, stack, type, editable, validatable,
-      primary: false, applyStrategy, applyPath: filePath, dependsOn: [],
+      id, label, path: resolvedPath, stack, type, editable, validatable,
+      primary: false, applyStrategy, applyPath: resolvedPath, dependsOn: [],
     });
     res.status(201).json({ ok: true, entry });
   } catch (err) {
