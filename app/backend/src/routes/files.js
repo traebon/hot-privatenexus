@@ -20,7 +20,7 @@ import { recordAudit } from "../auditLog.js";
 export const filesRouter = Router();
 
 // GET /api/files[?stack=<name>] — list registered files; optional stack filter
-filesRouter.get("/", (req, res) => {
+filesRouter.get("/", requireRole("viewer"), (req, res) => {
   try {
     const { stack } = req.query;
     let files = listRegisteredFiles();

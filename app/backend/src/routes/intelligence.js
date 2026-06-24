@@ -293,7 +293,7 @@ intelligenceRouter.get("/signals", requireRole("viewer"), async (req, res) => {
 // ── POST /api/intelligence/signals/:id/ack ───────────────────────────────────
 intelligenceRouter.post("/signals/:id/ack", requireRole("operator"), async (req, res) => {
   try {
-    const actor = req.session?.user?.preferred_username || "operator";
+    const actor = req.session?.user?.username || "operator";
     const { rows: [row] } = await getPool().query(
       `UPDATE intelligence_signals SET acknowledged=TRUE, ack_by=$1, ack_at=NOW()
        WHERE id=$2 AND tenant_id=$3 RETURNING *`,
@@ -336,7 +336,7 @@ intelligenceRouter.get("/proposals", requireRole("viewer"), async (req, res) => 
 intelligenceRouter.post("/proposals/:id/approve", requireRole("operator"), async (req, res) => {
   try {
     const pool  = getPool();
-    const actor = req.session?.user?.preferred_username || "operator";
+    const actor = req.session?.user?.username || "operator";
     const { rows: [prop] } = await pool.query(
       "SELECT * FROM remediation_proposals WHERE id=$1 AND tenant_id=$2",
       [req.params.id, HOT_TENANT_ID]
@@ -369,7 +369,7 @@ intelligenceRouter.post("/proposals/:id/approve", requireRole("operator"), async
 // ── POST /api/intelligence/proposals/:id/dismiss ─────────────────────────────
 intelligenceRouter.post("/proposals/:id/dismiss", requireRole("operator"), async (req, res) => {
   try {
-    const actor = req.session?.user?.preferred_username || "operator";
+    const actor = req.session?.user?.username || "operator";
     const { rows: [row] } = await getPool().query(
       "UPDATE remediation_proposals SET status='dismissed', reviewed_by=$1, reviewed_at=NOW() WHERE id=$2 AND tenant_id=$3 AND status='pending' RETURNING *",
       [actor, req.params.id, HOT_TENANT_ID]
@@ -406,7 +406,7 @@ intelligenceRouter.patch("/autonomous/:id", requireRole("admin"), async (req, re
       params
     );
     if (!row) return res.status(404).json({ ok: false, error: "Policy not found" });
-    const actor = req.session?.user?.preferred_username || "admin";
+    const actor = req.session?.user?.username || "admin";
     recordAudit(req, "intelligence.autonomous.toggle", `${row.signal_type}:${row.action_type}`, "success");
     res.json({ ok: true, policy: row });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -497,7 +497,7 @@ intelligenceRouter.post("/incident", requireRole("operator"), async (req, res) =
 
     const totalRTO    = steps.reduce((s, x) => s + (x.rto_min ?? 0), 0);
     const blockers    = steps.filter(s => s.warning).map(s => s.warning);
-    const actor       = req.session?.user?.preferred_username || "operator";
+    const actor       = req.session?.user?.username || "operator";
 
     recordAudit(req, "intelligence.incident", svc.name, "success");
 
@@ -544,7 +544,7 @@ intelligenceRouter.post("/service/:id/restart", requireRole("operator"), async (
     if (!svc) return res.status(404).json({ ok: false, error: "Service not found" });
     if (!svc.container_name) return res.status(422).json({ ok: false, error: "container_name not set on service" });
     const result = await executeAction(svc, "container.restart");
-    const actor  = req.session?.user?.preferred_username || "operator";
+    const actor  = req.session?.user?.username || "operator";
     recordAudit(req, "intelligence.service.restart", svc.name, result.ok ? "success" : "failure", result);
     recordChange(HOT_TENANT_ID, svc.id, svc.name, "container_restart", actor, `MCP-triggered restart of ${svc.container_name}`, result);
     res.json({ ok: true, service: svc.slug, ...result });

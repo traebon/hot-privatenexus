@@ -360,7 +360,7 @@ recoveryRouter.post("/simulate", requireRole("operator"), async (req, res) => {
     };
 
     // Persist simulation
-    const actor = req.session?.user?.preferred_username || "operator";
+    const actor = req.session?.user?.username || "operator";
     const { rows: [simRow] } = await pool.query(
       `INSERT INTO recovery_simulations (tenant_id, scenario_type, target_type, target_id, target_name, run_by, result)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
@@ -524,7 +524,7 @@ recoveryRouter.post("/restore-tests", requireRole("operator"), async (req, res) 
       "SELECT id, name FROM services WHERE id = $1 AND tenant_id = $2", [service_id, HOT_TENANT_ID]
     );
     if (!svc) return res.status(404).json({ ok: false, error: "Service not found" });
-    const actor = req.session?.user?.preferred_username || "operator";
+    const actor = req.session?.user?.username || "operator";
     const { rows: [row] } = await pool.query(
       `INSERT INTO restore_tests (tenant_id, service_id, backup_id, tested_by, test_type, outcome, rto_actual_min, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,

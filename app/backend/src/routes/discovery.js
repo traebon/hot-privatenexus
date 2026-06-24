@@ -416,7 +416,7 @@ discoveryRouter.post("/agent-tokens", requireRole("admin"), async (req, res) => 
   const plaintext  = randomBytes(32).toString("hex");
   const hash       = hashToken(plaintext);
   const expires_at = ttl_hours ? new Date(Date.now() + ttl_hours * 3600 * 1000) : null;
-  const created_by = req.session?.user?.preferred_username || "admin";
+  const created_by = req.session?.user?.username || "admin";
 
   try {
     const { rows } = await getPool().query(
@@ -462,7 +462,7 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
       `UPDATE discovery_candidates
        SET status = 'rejected', reject_reason = $1, reviewed_at = NOW(), reviewed_by = $2
        WHERE id = $3`,
-      [reject_reason || null, req.session?.user?.preferred_username || "unknown", id]
+      [reject_reason || null, req.session?.user?.username || "unknown", id]
     );
     recordAudit(req, "discovery.candidate.reject", candidate.suggested_slug, "success");
     return res.json({ ok: true, status: "rejected" });
@@ -497,7 +497,14 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
     const category    = candidate.suggested_category || "app";
     const accessMode  = candidate.suggested_access_mode || "internal";
     const runtime     = candidate.suggested_runtime || "docker";
-    const healthEp    = candidate.suggested_health_ep || null;
+    const _rawHealthEp = candidate.suggested_health_ep || null;
+    let healthEp = null;
+    if (_rawHealthEp) {
+      try {
+        const _u = new URL(_rawHealthEp);
+        if (["http:", "https:", "tcp:"].includes(_u.protocol)) healthEp = _rawHealthEp;
+      } catch { /* malformed URL from ingest — silently drop */ }
+    }
     const description = candidate.suggested_description || null;
     const wsId        = candidate.suggested_workspace_id || null;
 
@@ -523,7 +530,7 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
       [
         HOT_TENANT_ID, wsId, name, slug, description,
         category, accessMode, runtime,
-        req.session?.user?.preferred_username || "discovered",
+        req.session?.user?.username || "discovered",
         "unknown", healthEp,
       ]
     );
@@ -533,7 +540,7 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
       `UPDATE discovery_candidates
        SET status = 'merged', merged_service_id = $1, reviewed_at = NOW(), reviewed_by = $2
        WHERE id = $3`,
-      [newServiceId, req.session?.user?.preferred_username || "unknown", id]
+      [newServiceId, req.session?.user?.username || "unknown", id]
     );
 
     recordAudit(req, "discovery.candidate.approve", slug, "success", { newServiceId });

@@ -492,6 +492,10 @@ actionsRouter.post("/requests/:id/approve", requireRole("admin"), async (req, re
   if (new Date(actionReq.expires_at) < new Date())
     return res.status(410).json({ ok: false, error: "Request expired" });
 
+  const approver = req.session?.user?.username || "unknown";
+  if (actionReq.proposed_by === approver)
+    return res.status(403).json({ ok: false, error: "Cannot approve your own action request — dual-control requires a different approver" });
+
   // Mark approved
   await db.query(
     `UPDATE action_requests SET status='approved', reviewed_by=$1, reviewed_at=NOW(), review_note=$2 WHERE id=$3`,
