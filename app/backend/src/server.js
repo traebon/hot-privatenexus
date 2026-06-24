@@ -75,6 +75,14 @@ const MCP_TOKEN =
   readSecret("/run/secrets/mcp_token") ??
   process.env.MCP_TOKEN;
 
+if (sessionSecret === "dev-secret-change-me") {
+  const envType = process.env.NODE_ENV || "production";
+  if (envType !== "development") {
+    throw new Error("FATAL: sessionSecret is the insecure default — configure /run/secrets/session_secret or SESSION_SECRET env var");
+  }
+  console.warn("[WARN] Using insecure default session secret — development only");
+}
+
 app.set("trust proxy", 1);
 app.use(helmet({ contentSecurityPolicy: false }));
 app.disable("x-powered-by");

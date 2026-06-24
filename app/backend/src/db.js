@@ -23,7 +23,7 @@ export async function initDb() {
     port:     Number(process.env.DB_PORT || 5432),
     database: process.env.DB_NAME     || "privatenexus",
     user:     process.env.DB_USER     || "privatenexus",
-    password: process.env.DB_PASSWORD || readDbPassword(),
+    password: readDbPassword() ?? process.env.DB_PASSWORD,
     max: 10,
   });
 
