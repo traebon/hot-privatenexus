@@ -218,9 +218,20 @@ dependenciesRouter.post("/", requireRole("operator"), async (req, res) => {
     return res.status(400).json({ ok: false, error: "upstream_id and downstream_id required" });
   if (upstream_id === downstream_id)
     return res.status(400).json({ ok: false, error: "A service cannot depend on itself" });
+  const VALID_DEP_TYPES = ["hard", "soft"];
+  if (!VALID_DEP_TYPES.includes(dep_type))
+    return res.status(400).json({ ok: false, error: `dep_type must be one of: ${VALID_DEP_TYPES.join(", ")}` });
 
   try {
     const pool = getPool();
+    // Verify both service IDs belong to this tenant before creating the edge
+    const { rows: svcCheck } = await pool.query(
+      "SELECT id FROM services WHERE id = ANY($1) AND tenant_id = $2",
+      [[upstream_id, downstream_id], HOT_TENANT_ID]
+    );
+    if (svcCheck.length < 2)
+      return res.status(404).json({ ok: false, error: "One or both service IDs not found for this tenant" });
+
     const { rows } = await pool.query(
       `INSERT INTO service_dependencies (tenant_id, upstream_id, downstream_id, dep_type, notes, created_by)
        VALUES ($1, $2, $3, $4, $5, $6)

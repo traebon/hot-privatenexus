@@ -328,6 +328,8 @@ function pullImage(dockerClient, image) {
 }
 
 async function executeDeployContainer(containerName, newImage) {
+  if (CONTAINER_BLOCKLIST.has(containerName))
+    throw new Error(`Container '${containerName}' is protected and cannot be replaced via deploy`);
   const container = docker.getContainer(containerName);
   const info = await container.inspect();
   const oldImage = info.Config.Image;
@@ -455,6 +457,9 @@ actionsRouter.get("/requests", requireRole("operator"), async (req, res) => {
 actionsRouter.post("/requests", requireRole("operator"), async (req, res) => {
   const { action_type, service_id, params = {} } = req.body;
   if (!action_type) return res.status(400).json({ ok: false, error: "action_type required" });
+  const ALLOWED_REQUEST_TYPES = new Set(["service.deploy", "container.restart", "container.stop"]);
+  if (!ALLOWED_REQUEST_TYPES.has(action_type))
+    return res.status(400).json({ ok: false, error: `Unknown action_type '${action_type}' — must be one of: ${[...ALLOWED_REQUEST_TYPES].join(", ")}` });
 
   // Get service name if service_id provided
   let service_name = null;

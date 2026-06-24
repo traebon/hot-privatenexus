@@ -273,6 +273,9 @@ recoveryRouter.post("/simulate", requireRole("operator"), async (req, res) => {
   const { scenario_type, target_id, target_type = "service" } = req.body;
   if (!scenario_type || !target_id)
     return res.status(400).json({ ok: false, error: "scenario_type and target_id required" });
+  const VALID_SCENARIOS = ["full_loss", "partial", "data_corruption", "network_failure"];
+  if (!VALID_SCENARIOS.includes(scenario_type))
+    return res.status(400).json({ ok: false, error: `scenario_type must be one of: ${VALID_SCENARIOS.join(", ")}` });
 
   try {
     const pool = getPool();
@@ -518,6 +521,12 @@ recoveryRouter.get("/restore-tests", requireRole("viewer"), async (req, res) => 
 recoveryRouter.post("/restore-tests", requireRole("operator"), async (req, res) => {
   const { service_id, backup_id, test_type = "dry_run", outcome = "passed", rto_actual_min, notes } = req.body;
   if (!service_id) return res.status(400).json({ ok: false, error: "service_id required" });
+  const VALID_TEST_TYPES = ["dry_run", "partial", "full", "tabletop"];
+  const VALID_OUTCOMES   = ["passed", "failed", "partial"];
+  if (!VALID_TEST_TYPES.includes(test_type))
+    return res.status(400).json({ ok: false, error: `test_type must be one of: ${VALID_TEST_TYPES.join(", ")}` });
+  if (!VALID_OUTCOMES.includes(outcome))
+    return res.status(400).json({ ok: false, error: `outcome must be one of: ${VALID_OUTCOMES.join(", ")}` });
   try {
     const pool  = getPool();
     const { rows: [svc] } = await pool.query(
