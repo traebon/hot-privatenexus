@@ -1,6 +1,7 @@
 import express from "express";
 import { rateLimit } from "express-rate-limit";
 import cors from "cors";
+import helmet from "helmet";
 import session from "express-session";
 import RedisStore from "connect-redis";
 import { createClient } from "redis";
@@ -54,7 +55,10 @@ const apiLimiter = rateLimit({
 });
 
 // Redis session store
-const redisClient = createClient({ url: process.env.REDIS_URL || "redis://privatenexus-redis:6379" });
+const _redisPw = (() => { try { return readFileSync('/run/secrets/redis_password', 'utf8').trim(); } catch { return null; } })();
+const _redisBase = process.env.REDIS_URL || 'redis://privatenexus-redis:6379';
+const _redisUrl = _redisPw ? _redisBase.replace('redis://', `redis://:${encodeURIComponent(_redisPw)}@`) : _redisBase;
+const redisClient = createClient({ url: _redisUrl });
 redisClient.on("error", (err) => console.error("Redis error:", err));
 await redisClient.connect();
 
@@ -72,6 +76,7 @@ const MCP_TOKEN =
   process.env.MCP_TOKEN;
 
 app.set("trust proxy", 1);
+app.use(helmet({ contentSecurityPolicy: false }));
 app.disable("x-powered-by");
 app.use(cors({ origin: false }));
 app.use(express.json({ limit: "1mb" }));

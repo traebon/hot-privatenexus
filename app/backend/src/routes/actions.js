@@ -64,7 +64,7 @@ const actionCooldowns = new Map(); // containerId → lastActionTs (ms)
 // POST /api/actions/run — { action, containerId } (also accepts target for compat)
 // action: "start" | "stop" | "restart"
 // containerId: container id or name
-actionsRouter.post("/run", async (req, res) => {
+actionsRouter.post("/run", requireRole("operator"), async (req, res) => {
   const { action, containerId, target } = req.body || {};
   const id = containerId || target;
 
@@ -357,7 +357,7 @@ async function executeDeployContainer(containerName, newImage) {
 
 // ── Approval-aware /run v2 ────────────────────────────────────────────────────
 // Updated /run with blast-radius pre-check and policy lookup
-actionsRouter.post("/run/v2", async (req, res) => {
+actionsRouter.post("/run/v2", requireRole("operator"), async (req, res) => {
   const { action, containerId, target, service_id, force } = req.body || {};
   const id = containerId || target;
 

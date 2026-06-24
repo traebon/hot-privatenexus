@@ -24,10 +24,13 @@ services:
     image: redis:7-alpine
     container_name: privatenexus-redis
     restart: unless-stopped
+    command: sh -c 'redis-server --requirepass $$(cat /run/secrets/redis_password)'
+    secrets:
+      - redis_password
     networks:
       - pn-internal
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a $$(cat /run/secrets/redis_password) ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -64,6 +67,7 @@ services:
       - proxmox_token
       - discovery_agent_token
       - mcp_token
+      - redis_password
     ports:
       - "127.0.0.1:${PRIVATENEXUS_BACKEND_PORT:-3001}:3001"
     volumes:
@@ -74,6 +78,10 @@ services:
         condition: service_healthy
       privatenexus-redis:
         condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     networks:
       - pn-internal
       - pn-edge
@@ -124,6 +132,8 @@ networks:
   pn-edge:
 
 secrets:
+  redis_password:
+    file: ../secrets/redis_password.txt
   db_password:
     file: ../secrets/db_password.txt
   keycloak_client_secret:
