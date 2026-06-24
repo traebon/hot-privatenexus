@@ -22,7 +22,7 @@ const pool = new Pool({
   port:     Number(process.env.DB_PORT || 5432),
   database: process.env.DB_NAME     || "privatenexus",
   user:     process.env.DB_USER     || "privatenexus",
-  password: process.env.DB_PASSWORD || readSecret("/run/secrets/db_password"),
+  password: readSecret("/run/secrets/db_password") ?? process.env.DB_PASSWORD,
   max: 3,
 });
 
@@ -410,6 +410,9 @@ async function callTool(name, args) {
     case "pn_approve_proposal": {
       const { proposal_id } = args;
       if (!proposal_id) return { error: "proposal_id is required" };
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(proposal_id)) {
+        return { error: "proposal_id must be a valid UUID" };
+      }
       return backendCall("POST", `/api/intelligence/proposals/${proposal_id}/approve`);
     }
 
@@ -489,8 +492,18 @@ const server = http.createServer(async (req, res) => {
   }
 
   let body = "";
-  req.on("data", c => body += c);
+  let tooLarge = false;
+  req.on("data", c => {
+    if (!tooLarge) {
+      body += c;
+      if (body.length > 1_048_576) {
+        tooLarge = true;
+        jsonResp(res, { error: "Request body too large" }, 413);
+      }
+    }
+  });
   req.on("end", async () => {
+    if (tooLarge) return;
     let rpc;
     try { rpc = JSON.parse(body); } catch {
       return jsonResp(res, { jsonrpc: "2.0", error: { code: -32700, message: "Parse error" }, id: null });
