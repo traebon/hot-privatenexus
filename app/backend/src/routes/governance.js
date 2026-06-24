@@ -128,7 +128,10 @@ governanceRouter.get("/summary", requireRole("viewer"), async (_req, res) => {
     const s = { critical: 0, warning: 0, info: 0, total: v.length };
     for (const x of v) s[x.severity] = (s[x.severity] || 0) + 1;
     res.json({ ok: true, ...s });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[governance] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // GET /api/governance/recommendations
@@ -136,7 +139,10 @@ governanceRouter.get("/recommendations", requireRole("viewer"), async (_req, res
   try {
     const violations = await evaluateViolations(HOT_TENANT_ID);
     res.json({ ok: true, violations, count: violations.length });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[governance] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // GET /api/governance/rules
@@ -149,7 +155,10 @@ governanceRouter.get("/rules", requireRole("viewer"), async (_req, res) => {
       [HOT_TENANT_ID]
     );
     res.json({ ok: true, rules: rows });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[governance] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // PATCH /api/governance/rules/:key/toggle — admin
@@ -161,7 +170,10 @@ governanceRouter.patch("/rules/:key/toggle", requireRole("admin"), async (req, r
     );
     if (!rows.length) return res.status(404).json({ ok: false, error: "Rule not found" });
     res.json({ ok: true, rule: rows[0] });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[governance] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // GET /api/governance/exceptions
@@ -176,7 +188,10 @@ governanceRouter.get("/exceptions", requireRole("viewer"), async (_req, res) => 
       [HOT_TENANT_ID]
     );
     res.json({ ok: true, exceptions: rows });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[governance] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // POST /api/governance/exceptions — admin
@@ -196,7 +211,10 @@ governanceRouter.post("/exceptions", requireRole("admin"), async (req, res) => {
        req.session?.user?.username || "unknown"]
     );
     res.status(201).json({ ok: true, exception: rows[0] });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[governance] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // DELETE /api/governance/exceptions/:id — admin
@@ -207,7 +225,10 @@ governanceRouter.delete("/exceptions/:id", requireRole("admin"), async (req, res
       [req.params.id, HOT_TENANT_ID]
     );
     res.json({ ok: true });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[governance] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // GET /api/governance/change-records
@@ -230,7 +251,10 @@ governanceRouter.get("/change-records", requireRole("viewer"), async (req, res) 
       params
     );
     res.json({ ok: true, records: rows });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[governance] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // GET /api/governance/report — full structured report
@@ -300,7 +324,10 @@ governanceRouter.get("/report", requireRole("admin"), async (_req, res) => {
         })),
       },
     });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[governance] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // GET /api/governance/report/export — JSON download
@@ -317,5 +344,8 @@ governanceRouter.get("/report/export", requireRole("admin"), async (_req, res) =
     res.setHeader("Content-Disposition",
       `attachment; filename="governance-${new Date().toISOString().slice(0, 10)}.json"`);
     res.json({ generated_at: new Date().toISOString(), tenant: "house-of-trae", violations, services: svcs });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[governance] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });

@@ -200,7 +200,8 @@ recoveryRouter.get("/readiness", requireRole("viewer"), async (_req, res) => {
 
     res.json({ ok: true, services: rows, summary: { ...counts, total: rows.length, avg_score } });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[recovery] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -218,7 +219,8 @@ recoveryRouter.get("/confidence/:id", requireRole("viewer"), async (req, res) =>
     const conf = computeConfidence(svc, backupsByService[svc.id], testsByService[svc.id], depCountByService[svc.id]);
     res.json({ ok: true, service: { id: svc.id, name: svc.name, slug: svc.slug }, ...conf });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[recovery] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -264,7 +266,8 @@ recoveryRouter.get("/gaps", requireRole("viewer"), async (_req, res) => {
 
     res.json({ ok: true, gaps, total: gaps.length });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[recovery] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -374,7 +377,8 @@ recoveryRouter.post("/simulate", requireRole("operator"), async (req, res) => {
 
     res.json({ ok: true, simulation_id: simRow.id, ...result });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[recovery] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -463,7 +467,8 @@ recoveryRouter.post("/playbook", requireRole("viewer"), async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[recovery] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -477,7 +482,10 @@ recoveryRouter.get("/simulations", requireRole("viewer"), async (_req, res) => {
       [HOT_TENANT_ID]
     );
     res.json({ ok: true, simulations: rows });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[recovery] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 recoveryRouter.get("/simulations/:id", requireRole("viewer"), async (req, res) => {
@@ -488,7 +496,10 @@ recoveryRouter.get("/simulations/:id", requireRole("viewer"), async (req, res) =
     );
     if (!sim) return res.status(404).json({ ok: false, error: "Not found" });
     res.json({ ok: true, simulation: { ...sim, result: sim.result } });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[recovery] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 recoveryRouter.delete("/simulations/:id", requireRole("admin"), async (req, res) => {
@@ -499,7 +510,10 @@ recoveryRouter.delete("/simulations/:id", requireRole("admin"), async (req, res)
     );
     if (!row) return res.status(404).json({ ok: false, error: "Not found" });
     res.json({ ok: true });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[recovery] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // ── Restore tests ────────────────────────────────────────────────────────────
@@ -515,7 +529,10 @@ recoveryRouter.get("/restore-tests", requireRole("viewer"), async (req, res) => 
       params
     );
     res.json({ ok: true, tests: rows });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[recovery] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 recoveryRouter.post("/restore-tests", requireRole("operator"), async (req, res) => {
@@ -543,7 +560,10 @@ recoveryRouter.post("/restore-tests", requireRole("operator"), async (req, res) 
       `Restore test recorded (${test_type}): ${outcome}`, { test_type, outcome, rto_actual_min });
     recordAudit(req, "recovery.restore_test.create", svc.name, "success");
     res.json({ ok: true, test: row });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[recovery] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 recoveryRouter.delete("/restore-tests/:id", requireRole("admin"), async (req, res) => {
@@ -554,5 +574,8 @@ recoveryRouter.delete("/restore-tests/:id", requireRole("admin"), async (req, re
     );
     if (!row) return res.status(404).json({ ok: false, error: "Not found" });
     res.json({ ok: true });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[recovery] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });

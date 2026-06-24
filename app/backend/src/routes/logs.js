@@ -31,7 +31,8 @@ logsRouter.get("/sources", requireRole("viewer"), async (_req, res) => {
       containers: (containersJson.data || []).map((c) => c.replace(/^\//, "")).sort(),
     });
   } catch (err) {
-    res.status(502).json({ ok: false, error: err.message });
+    console.error("[logs] error:", err.message);
+    res.status(502).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -45,6 +46,8 @@ logsRouter.get("/query", requireRole("viewer"), async (req, res) => {
   const start = end - BigInt(rangeSeconds) * 1_000_000_000n;
 
   if (!source) return res.status(400).json({ ok: false, error: "source is required" });
+  // T16-4: cap search length to prevent oversized LogQL queries
+  if (search.length > 500) return res.status(400).json({ ok: false, error: "search too long (max 500 chars)" });
 
   // Sanitize source: only allow hostname/container-name chars to prevent LogQL injection
   if (!/^[a-zA-Z0-9._-]+$/.test(source)) {
@@ -79,7 +82,8 @@ logsRouter.get("/query", requireRole("viewer"), async (req, res) => {
 
     res.json({ ok: true, lines: lines.slice(0, limitN), ts: new Date().toISOString() });
   } catch (err) {
-    res.status(502).json({ ok: false, error: err.message });
+    console.error("[logs] error:", err.message);
+    res.status(502).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -114,6 +118,7 @@ logsRouter.get("/:container", requireRole("operator"), async (req, res) => {
     lines.sort((a, b) => (b.ts > a.ts ? 1 : -1));
     res.json(lines.slice(0, 150));
   } catch (err) {
-    res.status(502).json({ error: err.message });
+    console.error("[logs] error:", err.message);
+    res.status(502).json({ error: "Service unavailable" });
   }
 });

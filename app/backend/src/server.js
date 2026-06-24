@@ -6,6 +6,7 @@ import session from "express-session";
 import RedisStore from "connect-redis";
 import { createClient } from "redis";
 import { readFileSync } from "fs";
+import { timingSafeEqual } from "crypto";
 
 import { authRouter }        from "./routes/auth.js";
 import { appsRouter }        from "./routes/apps.js";
@@ -112,7 +113,15 @@ app.use(
 // MCP internal auth — must run before requireAuth so MCP server can call backend APIs
 app.use((req, _res, next) => {
   const tok = req.headers["x-mcp-internal"];
-  if (tok && MCP_TOKEN && tok === MCP_TOKEN) {
+  // T16-3: constant-time comparison prevents timing-based token enumeration
+  const mcpMatch = tok && MCP_TOKEN && (() => {
+    try {
+      const a = Buffer.from(tok);
+      const b = Buffer.from(MCP_TOKEN);
+      return a.length === b.length && timingSafeEqual(a, b);
+    } catch { return false; }
+  })();
+  if (mcpMatch) {
     req.session.user = {
       sub: "mcp-server",
       username: "mcp-server",

@@ -54,7 +54,8 @@ adminRouter.get("/network", requireRole("operator"), async (_req, res) => {
 
     res.json({ ok: true, interfaces, networks, ts: new Date().toISOString() });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[admin] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -79,7 +80,8 @@ adminRouter.get("/certs", requireRole("operator"), async (_req, res) => {
     }).sort((a, b) => a.daysLeft - b.daysLeft);
     res.json({ ok: true, certs, ts: new Date().toISOString() });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[admin] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -119,7 +121,8 @@ adminRouter.get("/disk", requireRole("operator"), async (_req, res) => {
 
     res.json({ ok: true, mounts, dockerVolumes, ts: new Date().toISOString() });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[admin] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -140,7 +143,8 @@ adminRouter.get("/users", requireRole("admin"), async (_req, res) => {
     `);
     res.json({ ok: true, users: rows });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[admin] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -168,7 +172,8 @@ adminRouter.get("/audit", requireRole("operator"), async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("[admin] error:", err.message);
+    res.status(500).json({ error: "Service unavailable" });
   }
 });
 
@@ -197,6 +202,7 @@ adminRouter.get("/users-manage", requireRole("admin"), async (_req, res) => {
     `);
     res.json({ ok: true, users: rows, ts: new Date().toISOString() });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[admin] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });

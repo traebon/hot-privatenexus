@@ -82,6 +82,11 @@ authRouter.get("/logout", (req, res) => {
   const origin = req.headers.origin || "";
   const referer = req.headers.referer || "";
   const appOrigin = new URL(POST_LOGOUT_URI).origin;
+  // T16-2: both headers absent means the check is trivially bypassed (forced-logout CSRF).
+  // Legitimate browser navigation from within the app always sends Referer (same-origin).
+  if (!origin && !referer) {
+    return res.status(403).send("Logout rejected — Origin or Referer header required");
+  }
   if ((origin && origin !== appOrigin) || (referer && !referer.startsWith(appOrigin))) {
     return res.status(403).send("Logout CSRF check failed");
   }

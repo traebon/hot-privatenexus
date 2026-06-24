@@ -68,7 +68,8 @@ alertsRouter.get("/", requireRole("viewer"), async (_req, res) => {
   try {
     res.json(await buildAlerts());
   } catch (err) {
-    res.status(502).json({ error: err.message });
+    console.error("[alerts] error:", err.message);
+    res.status(502).json({ error: "Service unavailable" });
   }
 });
 

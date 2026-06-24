@@ -81,6 +81,7 @@ activityRouter.get("/", requireRole("operator"), async (req, res) => {
 
     res.json({ ok: true, events, total, maxId });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[activity] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });

@@ -76,7 +76,8 @@ servicesRouter.get("/", requireRole("viewer"), async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("[services] error:", err.message);
+    res.status(500).json({ error: "Service unavailable" });
   }
 });
 
@@ -108,7 +109,8 @@ servicesRouter.post("/", requireRole("admin"), async (req, res) => {
     res.status(201).json(rows[0]);
   } catch (err) {
     if (err.code === "23505") return res.status(409).json({ error: "Slug already exists" });
-    res.status(500).json({ error: err.message });
+    console.error("[services] error:", err.message);
+    res.status(500).json({ error: "Service unavailable" });
   }
 });
 
@@ -152,7 +154,8 @@ servicesRouter.put("/:id", requireRole("admin"), async (req, res) => {
     res.json(rows[0]);
   } catch (err) {
     if (err.code === "23505") return res.status(409).json({ error: "Slug already exists" });
-    res.status(500).json({ error: err.message });
+    console.error("[services] error:", err.message);
+    res.status(500).json({ error: "Service unavailable" });
   }
 });
 
@@ -165,7 +168,8 @@ servicesRouter.get("/workspaces", requireRole("viewer"), async (_req, res) => {
     );
     res.json({ ok: true, workspaces: rows });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[services] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -197,7 +201,8 @@ servicesRouter.patch("/:id", requireRole("admin"), async (req, res) => {
     recordAudit(req, action, rows[0].slug, "success");
     res.json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("[services] error:", err.message);
+    res.status(500).json({ error: "Service unavailable" });
   }
 });
 
@@ -207,7 +212,8 @@ servicesRouter.get("/health", requireRole("operator"), async (_req, res) => {
     const results = await probeAllServices("manual");
     res.json({ ok: true, results, ts: new Date().toISOString() });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[services] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -225,7 +231,8 @@ servicesRouter.get("/:id/health-history", requireRole("viewer"), async (req, res
     );
     res.json({ ok: true, events: rows });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[services] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -273,7 +280,8 @@ servicesRouter.get("/:id/backups", requireRole("viewer"), async (req, res) => {
     );
     res.json({ ok: true, backups: rows, score: computeRecoveryScore(rows) });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[services] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -300,7 +308,8 @@ servicesRouter.post("/:id/backups", requireRole("operator"), async (req, res) =>
     recordAudit(req, "service_backup.create", req.params.id, "success", { label: rows[0].label });
     res.status(201).json({ ok: true, backup: rows[0] });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[services] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -327,7 +336,8 @@ servicesRouter.patch("/:id/backups/:backupId", requireRole("operator"), async (r
     recordAudit(req, "service_backup.update", req.params.id, "success", { backupId: rows[0].id });
     res.json({ ok: true, backup: rows[0] });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[services] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -342,7 +352,8 @@ servicesRouter.delete("/:id/backups/:backupId", requireRole("admin"), async (req
     recordAudit(req, "service_backup.delete", req.params.id, "success", { backupId: req.params.backupId });
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[services] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -360,7 +371,8 @@ servicesRouter.post("/workspaces", requireRole("admin"), async (req, res) => {
     res.status(201).json({ ok: true, workspace: rows[0] });
   } catch (err) {
     if (err.code === "23505") return res.status(409).json({ ok: false, error: "Slug already in use" });
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[services] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 
@@ -377,7 +389,8 @@ servicesRouter.patch("/workspaces/:id", requireRole("admin"), async (req, res) =
     res.json({ ok: true, workspace: rows[0] });
   } catch (err) {
     if (err.code === "23505") return res.status(409).json({ ok: false, error: "Slug already in use" });
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[services] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
 });
 

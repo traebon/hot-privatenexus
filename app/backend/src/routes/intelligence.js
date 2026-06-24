@@ -287,7 +287,10 @@ intelligenceRouter.get("/signals", requireRole("viewer"), async (req, res) => {
     const counts = { critical: 0, warning: 0, info: 0, total: rows.length };
     for (const r of rows) if (r.severity in counts) counts[r.severity]++;
     res.json({ ok: true, signals: rows, counts });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[intelligence] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // ── POST /api/intelligence/signals/:id/ack ───────────────────────────────────
@@ -301,7 +304,10 @@ intelligenceRouter.post("/signals/:id/ack", requireRole("operator"), async (req,
     );
     if (!row) return res.status(404).json({ ok: false, error: "Signal not found" });
     res.json({ ok: true, signal: row });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[intelligence] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // ── POST /api/intelligence/signals/:id/resolve ───────────────────────────────
@@ -314,7 +320,10 @@ intelligenceRouter.post("/signals/:id/resolve", requireRole("operator"), async (
     );
     if (!row) return res.status(404).json({ ok: false, error: "Signal not found" });
     res.json({ ok: true, signal: row });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[intelligence] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // ── GET /api/intelligence/proposals ─────────────────────────────────────────
@@ -329,7 +338,10 @@ intelligenceRouter.get("/proposals", requireRole("viewer"), async (req, res) => 
       params
     );
     res.json({ ok: true, proposals: rows });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[intelligence] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // ── POST /api/intelligence/proposals/:id/approve ─────────────────────────────
@@ -363,7 +375,10 @@ intelligenceRouter.post("/proposals/:id/approve", requireRole("operator"), async
     recordChange(HOT_TENANT_ID, prop.service_id, prop.service_name, "proposal_executed",
       actor, `${prop.action_type} proposal ${newStatus}`, result);
     res.json({ ok: true, result, status: newStatus });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[intelligence] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // ── POST /api/intelligence/proposals/:id/dismiss ─────────────────────────────
@@ -376,7 +391,10 @@ intelligenceRouter.post("/proposals/:id/dismiss", requireRole("operator"), async
     );
     if (!row) return res.status(404).json({ ok: false, error: "Not found or not pending" });
     res.json({ ok: true });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[intelligence] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // ── GET /api/intelligence/autonomous ─────────────────────────────────────────
@@ -387,7 +405,10 @@ intelligenceRouter.get("/autonomous", requireRole("viewer"), async (_req, res) =
       [HOT_TENANT_ID]
     );
     res.json({ ok: true, policies: rows });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[intelligence] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // ── PATCH /api/intelligence/autonomous/:id ───────────────────────────────────
@@ -409,7 +430,10 @@ intelligenceRouter.patch("/autonomous/:id", requireRole("admin"), async (req, re
     const actor = req.session?.user?.username || "admin";
     recordAudit(req, "intelligence.autonomous.toggle", `${row.signal_type}:${row.action_type}`, "success");
     res.json({ ok: true, policy: row });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[intelligence] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // ── POST /api/intelligence/scan ───────────────────────────────────────────────
@@ -418,7 +442,10 @@ intelligenceRouter.post("/scan", requireRole("operator"), async (req, res) => {
     const result = await runIntelligenceScan();
     recordAudit(req, "intelligence.scan", "estate", "success", result);
     res.json({ ok: true, ...result });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[intelligence] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // ── POST /api/intelligence/incident ──────────────────────────────────────────
@@ -516,7 +543,10 @@ intelligenceRouter.post("/incident", requireRole("operator"), async (req, res) =
         dependencies_involved: steps.filter(s => !s.is_target).length,
       },
     });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[intelligence] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // ── POST /api/intelligence/service/:id/probe ──────────────────────────────────
@@ -530,7 +560,10 @@ intelligenceRouter.post("/service/:id/probe", requireRole("operator"), async (re
     const result = await probeService(svc);
     recordAudit(req, "intelligence.service.probe", svc.name, result.ok ? "success" : "failure", result);
     res.json({ ok: true, service: svc.slug, ...result });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[intelligence] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
 
 // ── POST /api/intelligence/service/:id/restart ────────────────────────────────
@@ -548,5 +581,8 @@ intelligenceRouter.post("/service/:id/restart", requireRole("operator"), async (
     recordAudit(req, "intelligence.service.restart", svc.name, result.ok ? "success" : "failure", result);
     recordChange(HOT_TENANT_ID, svc.id, svc.name, "container_restart", actor, `MCP-triggered restart of ${svc.container_name}`, result);
     res.json({ ok: true, service: svc.slug, ...result });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error("[intelligence] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
