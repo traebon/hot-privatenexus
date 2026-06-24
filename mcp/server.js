@@ -4,6 +4,7 @@
 // Write tools: call backend HTTP API with X-MCP-Internal auth header
 import { readFileSync } from "fs";
 import http from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import pg from "pg";
 
 const { Pool } = pg;
@@ -477,9 +478,17 @@ function jsonResp(res, body, status = 200) {
 }
 
 const server = http.createServer(async (req, res) => {
-  // Auth
+  // Auth — T17-3: constant-time comparison to prevent timing oracle on token
   const auth = req.headers.authorization || "";
-  if (!TOKEN || auth !== `Bearer ${TOKEN}`) {
+  const expected = TOKEN ? `Bearer ${TOKEN}` : "";
+  const authOk = TOKEN && (() => {
+    try {
+      const a = Buffer.from(auth);
+      const b = Buffer.from(expected);
+      return a.length === b.length && timingSafeEqual(a, b);
+    } catch { return false; }
+  })();
+  if (!authOk) {
     return jsonResp(res, { error: "Unauthorized" }, 401);
   }
 

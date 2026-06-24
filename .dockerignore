@@ -1,0 +1,5 @@
+# Exclude host-installed modules from Docker build context — prevents host
+# node_modules from overwriting the npm-ci-installed ones inside the image.
+**/node_modules/
+**/.git/
+**/secrets/
