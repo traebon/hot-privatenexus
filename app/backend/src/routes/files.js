@@ -810,8 +810,8 @@ filesRouter.post("/register", requireRole("admin"), async (req, res) => {
   if (!id || !label || !filePath || !stack) {
     return res.status(400).json({ ok: false, error: "id, label, path, stack are required" });
   }
-  const resolvedPath = require("path").resolve(filePath);
-  const BLOCKED_PREFIXES = ["/run/secrets", "/opt/privatenexus/secrets", "/root", "/etc", "/proc", "/sys"];
+  const resolvedPath = path.resolve(filePath);
+  const BLOCKED_PREFIXES = ["/run/secrets", "/opt/privatenexus/secrets", "/opt/privatenexus/app", "/root", "/etc", "/proc", "/sys"];
   if (BLOCKED_PREFIXES.some((p) => resolvedPath === p || resolvedPath.startsWith(p + "/"))) {
     return res.status(403).json({ ok: false, error: "Path is in a restricted directory" });
   }

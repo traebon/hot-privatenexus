@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { requireRole } from "../middleware/requireRole.js";
 
 export const appsRouter = Router();
 
@@ -38,7 +39,7 @@ const HOT_APPS = [
   { name: "Wazuh SIEM",     logo: "🔍",  category: "Security",   meta: "SIEM · Alerts",         url: null,                                  container: "wazuh.manager",        probe: null },
 ];
 
-appsRouter.get("/", async (_req, res) => {
+appsRouter.get("/", requireRole("viewer"), async (_req, res) => {
   const status = await probeStatus();
   const apps = HOT_APPS.map((app) => ({
     ...app,
