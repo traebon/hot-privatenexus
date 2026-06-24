@@ -1,4 +1,5 @@
 import express from "express";
+import { rateLimit } from "express-rate-limit";
 import cors from "cors";
 import session from "express-session";
 import RedisStore from "connect-redis";
@@ -35,6 +36,23 @@ const port = Number(process.env.PORT || 3001);
 await initDb();
 startHealthScheduler();
 
+// Rate limiters — applied at app level so they work regardless of upstream proxy
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,  // 15 minutes
+  max: 20,                    // 20 auth attempts per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "Too many requests" },
+  skip: (req) => req.path === "/callback",  // don't limit OIDC callbacks
+});
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,        // 1 minute
+  max: 300,                   // 300 requests/min per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "Too many requests" },
+});
+
 // Redis session store
 const redisClient = createClient({ url: process.env.REDIS_URL || "redis://privatenexus-redis:6379" });
 redisClient.on("error", (err) => console.error("Redis error:", err));
@@ -57,6 +75,9 @@ app.set("trust proxy", 1);
 app.disable("x-powered-by");
 app.use(cors({ origin: false }));
 app.use(express.json({ limit: "1mb" }));
+
+app.use("/api/auth", authLimiter);
+app.use("/api", apiLimiter);
 
 app.use(
   session({
