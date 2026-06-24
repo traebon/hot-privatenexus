@@ -25,6 +25,8 @@ activityRouter.get("/", requireRole("operator"), async (req, res) => {
     const params     = [];
 
     if (req.query.since_id) {
+      if (!/^\d+$/.test(req.query.since_id))
+        return res.status(400).json({ ok: false, error: "since_id must be a non-negative integer" });
       params.push(BigInt(req.query.since_id));
       conditions.push(`id > $${params.length}`);
     }

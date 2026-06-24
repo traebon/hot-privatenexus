@@ -188,6 +188,10 @@ actionsRouter.post("/emergency", requireRole("admin"), async (req, res) => {
       const results = [];
       for (const c of list) {
         const name = (c.Names?.[0] || "").replace(/^\//, "");
+        if (CONTAINER_BLOCKLIST.has(name)) {
+          results.push({ name, ok: false, skipped: true, reason: "blocklisted — not restarted" });
+          continue;
+        }
         try {
           await docker.getContainer(c.Id).restart({ t: 10 });
           results.push({ name, ok: true });

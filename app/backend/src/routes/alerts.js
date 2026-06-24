@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { requireRole } from "../middleware/requireRole.js";
 
 export const alertsRouter = Router();
 
@@ -63,7 +64,7 @@ async function buildAlerts() {
   return alerts;
 }
 
-alertsRouter.get("/", async (_req, res) => {
+alertsRouter.get("/", requireRole("viewer"), async (_req, res) => {
   try {
     res.json(await buildAlerts());
   } catch (err) {
@@ -71,7 +72,7 @@ alertsRouter.get("/", async (_req, res) => {
   }
 });
 
-alertsRouter.get("/stream", (req, res) => {
+alertsRouter.get("/stream", requireRole("viewer"), (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -88,5 +89,6 @@ alertsRouter.get("/stream", (req, res) => {
 
   send();
   const interval = setInterval(send, 30000);
-  req.on("close", () => clearInterval(interval));
+  const timeout = setTimeout(() => { clearInterval(interval); res.end(); }, 10 * 60 * 1000);
+  req.on("close", () => { clearInterval(interval); clearTimeout(timeout); });
 });

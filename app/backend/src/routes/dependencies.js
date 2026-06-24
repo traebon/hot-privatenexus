@@ -228,7 +228,7 @@ dependenciesRouter.post("/", requireRole("operator"), async (req, res) => {
          SET dep_type = EXCLUDED.dep_type, notes = EXCLUDED.notes
        RETURNING *`,
       [HOT_TENANT_ID, upstream_id, downstream_id, dep_type, notes ?? null,
-       req.session?.user?.preferred_username || "operator"]
+       req.session?.user?.username || "operator"]
     );
     recordAudit(req, "dependency.create", `${upstream_id}→${downstream_id}`, "success");
     res.json({ ok: true, dependency: rows[0] });

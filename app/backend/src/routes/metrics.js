@@ -1,6 +1,7 @@
 import { Router } from "express";
 import os from "os";
 import { execSync } from "child_process";
+import { requireRole } from "../middleware/requireRole.js";
 
 export const metricsRouter = Router();
 
@@ -145,7 +146,7 @@ function seriesStat(arr) {
   return { current, previous, min, avg, max, trend };
 }
 
-metricsRouter.get("/", (_req, res) => {
+metricsRouter.get("/", requireRole("viewer"), (_req, res) => {
   res.json({
     cpu:     history.cpu,
     memory:  history.memory,

@@ -84,7 +84,7 @@ logsRouter.get("/query", requireRole("viewer"), async (req, res) => {
 });
 
 // Legacy: GET /api/logs/:container — used by Stacks drawer
-logsRouter.get("/:container", async (req, res) => {
+logsRouter.get("/:container", requireRole("operator"), async (req, res) => {
   const rawName = req.params.container.replace(/^\//, "");
   if (!/^[a-zA-Z0-9._-]+$/.test(rawName)) {
     return res.status(400).json({ error: "invalid container name" });
