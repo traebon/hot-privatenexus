@@ -6,6 +6,14 @@ export const stacksRouter = Router();
 
 const docker = getDocker();
 
+// Docker container IDs are 64-char hex (full) or 12-char hex (short);
+// container names are alphanumeric + hyphens + underscores + dots.
+// Reject anything else to prevent path traversal into the Docker API.
+const CONTAINER_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
+function validateContainerId(id) {
+  return typeof id === "string" && CONTAINER_ID_RE.test(id);
+}
+
 function formatContainer(c) {
   const labels = c.Labels || {};
   return {
@@ -49,13 +57,15 @@ stacksRouter.get("/", requireRole("viewer"), async (_req, res) => {
 
     res.json({ projects, total: containers.length });
   } catch (err) {
-    console.error("Docker listContainers failed:", err.message);
-    res.status(500).json({ error: "Docker unavailable", detail: err.message });
+    console.error("[stacks] listContainers failed:", err.message);
+    res.status(500).json({ error: "Docker unavailable" });
   }
 });
 
 // GET /api/stacks/:id — single container inspect summary
 stacksRouter.get("/:id", requireRole("viewer"), async (req, res) => {
+  if (!validateContainerId(req.params.id))
+    return res.status(400).json({ error: "invalid container identifier" });
   try {
     const container = docker.getContainer(req.params.id);
     const info = await container.inspect();
@@ -101,12 +111,15 @@ stacksRouter.get("/:id", requireRole("viewer"), async (req, res) => {
       labels: info.Config?.Labels || {},
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("[stacks] inspect failed:", err.message);
+    res.status(500).json({ error: "Docker unavailable" });
   }
 });
 
 // GET /api/stacks/:id/logs — last N lines (operator+ only — logs may contain credentials/tokens)
 stacksRouter.get("/:id/logs", requireRole("operator"), async (req, res) => {
+  if (!validateContainerId(req.params.id))
+    return res.status(400).json({ error: "invalid container identifier" });
   const tail = Math.min(Number(req.query.tail) || 100, 500);
   try {
     const container = docker.getContainer(req.params.id);
@@ -122,6 +135,7 @@ stacksRouter.get("/:id/logs", requireRole("operator"), async (req, res) => {
     }
     res.json({ id: req.params.id, tail, lines });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("[stacks] logs failed:", err.message);
+    res.status(500).json({ error: "Docker unavailable" });
   }
 });

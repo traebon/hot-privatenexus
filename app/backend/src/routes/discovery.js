@@ -377,15 +377,30 @@ discoveryRouter.post("/ingest", async (req, res) => {
   if (!Array.isArray(incoming) || !incoming.length) {
     return res.status(400).json({ ok: false, error: "candidates array required" });
   }
+  const MAX_CANDIDATES_PER_INGEST = 100;
+  if (incoming.length > MAX_CANDIDATES_PER_INGEST) {
+    return res.status(400).json({ ok: false, error: `Batch size exceeds limit of ${MAX_CANDIDATES_PER_INGEST}` });
+  }
 
   const known   = await knownSlugs(pool);
+
+  // T13-5: pre-fetch valid workspace IDs for this tenant so we can null out foreign IDs from agents
+  const { rows: wsRows } = await pool.query(
+    "SELECT id FROM workspaces WHERE tenant_id = $1",
+    [HOT_TENANT_ID]
+  );
+  const validWsIds = new Set(wsRows.map(r => r.id));
+
   let inserted  = 0;
   let skipped   = 0;
 
   for (const c of incoming) {
     const slug = toSlug(c.suggested_slug || c.raw_name || "");
     if (!slug || known.has(slug)) { skipped++; continue; }
-    const row = await upsertCandidate(pool, { ...c, suggested_slug: slug });
+    // Null out workspace_id from external agents if it doesn't belong to this tenant
+    const safeWsId = (c.suggested_workspace_id && validWsIds.has(c.suggested_workspace_id))
+      ? c.suggested_workspace_id : null;
+    const row = await upsertCandidate(pool, { ...c, suggested_slug: slug, suggested_workspace_id: safeWsId });
     row ? inserted++ : skipped++;
   }
 
@@ -483,6 +498,17 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
       }
     }
     if (!sets.length) return res.status(400).json({ ok: false, error: "No valid fields to update" });
+
+    // T13-5: verify workspace_id belongs to this tenant before accepting it
+    if (updates?.suggested_workspace_id !== undefined && updates.suggested_workspace_id !== null) {
+      const { rows: wsCheck } = await pool.query(
+        "SELECT id FROM workspaces WHERE id = $1 AND tenant_id = $2",
+        [updates.suggested_workspace_id, HOT_TENANT_ID]
+      );
+      if (!wsCheck.length)
+        return res.status(404).json({ ok: false, error: "workspace_id not found for this tenant" });
+    }
+
     await pool.query(
       `UPDATE discovery_candidates SET ${sets.join(", ")} WHERE id = $1`,
       params
