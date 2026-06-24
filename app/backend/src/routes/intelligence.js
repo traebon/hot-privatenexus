@@ -4,11 +4,11 @@ import { getPool, HOT_TENANT_ID } from "../db.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
 import { recordChange } from "./governance.js";
-import Docker from "dockerode";
+import { getDocker } from "../dockerClient.js";
 
 export const intelligenceRouter = Router();
 
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+const docker = getDocker();
 
 // ── Signal detection ─────────────────────────────────────────────────────────
 function detectSignals(svc, events) {

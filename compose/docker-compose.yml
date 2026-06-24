@@ -35,6 +35,37 @@ services:
       timeout: 3s
       retries: 5
 
+  privatenexus-docker-proxy:
+    image: tecnativa/docker-socket-proxy
+    container_name: privatenexus-docker-proxy
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1   # list + inspect
+      IMAGES: 1       # list images (deploy)
+      POST: 1         # start / stop / restart / pull / create
+      EXEC: 0         # block exec — key security control
+      BUILD: 0
+      COMMIT: 0
+      AUTH: 0
+      CONFIGS: 0
+      DISTRIBUTION: 0
+      EVENTS: 1
+      INFO: 1
+      NETWORKS: 0
+      NODES: 0
+      PLUGINS: 0
+      SECRETS: 0
+      SERVICES: 0
+      SESSION: 0
+      SWARM: 0
+      SYSTEM: 0
+      TASKS: 0
+      VERSION: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - pn-internal
+
   privatenexus-backend:
     build:
       context: ..
@@ -60,6 +91,7 @@ services:
       HEALTH_EVENT_RETENTION_DAYS: ${HEALTH_EVENT_RETENTION_DAYS:-30}
       PROXMOX_URL: ${PROXMOX_URL:-https://10.10.0.2:8006/api2/json}
       CADDY_ADMIN_URL: ${CADDY_ADMIN_URL:-http://10.10.0.1:2019}
+      DOCKER_HOST: tcp://privatenexus-docker-proxy:2375
     secrets:
       - db_password
       - keycloak_client_secret
@@ -71,13 +103,15 @@ services:
     ports:
       - "127.0.0.1:${PRIVATENEXUS_BACKEND_PORT:-3001}:3001"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /opt/privatenexus:/opt/privatenexus
     depends_on:
       privatenexus-db:
         condition: service_healthy
       privatenexus-redis:
         condition: service_healthy
+      privatenexus-docker-proxy:
+        condition: service_started
+    user: "1000"
     cap_drop:
       - ALL
     security_opt:

@@ -1,10 +1,10 @@
 import { Router } from "express";
-import Docker from "dockerode";
+import { getDocker } from "../dockerClient.js";
 import { requireRole } from "../middleware/requireRole.js";
 
 export const stacksRouter = Router();
 
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+const docker = getDocker();
 
 function formatContainer(c) {
   const labels = c.Labels || {};

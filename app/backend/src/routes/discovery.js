@@ -2,7 +2,7 @@ import { Router } from "express";
 import { createHash, randomBytes } from "crypto";
 import { readFileSync } from "fs";
 import https from "node:https";
-import Docker from "dockerode";
+import { getDocker } from "../dockerClient.js";
 import { getPool, HOT_TENANT_ID } from "../db.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
@@ -36,7 +36,7 @@ function proxmoxFetch(url, headers = {}) {
 
 export const discoveryRouter = Router();
 
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+const docker = getDocker();
 
 // ── Completeness score ──────────────────────────────────────────────────────
 function computeCompleteness(c) {

@@ -4,11 +4,11 @@ import { execSync } from "child_process";
 import { getPool } from "../db.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
-import Docker from "dockerode";
+import { getDocker } from "../dockerClient.js";
 
 export const adminRouter = Router();
 
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+const docker = getDocker();
 
 // GET /api/admin/backup — real schedule info (static config, not live state)
 adminRouter.get("/backup", (_req, res) => {

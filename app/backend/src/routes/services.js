@@ -12,6 +12,18 @@ const VALID_ACCESS_MODES = ["public", "sso", "vpn_only", "internal", "mtls"];
 const VALID_RUNTIME_TYPES = ["docker", "podman", "vm", "lxc", "external", "api"];
 const VALID_STATUSES     = ["healthy", "warning", "degraded", "down", "unknown"];
 const VALID_BACKUP_POLICIES = ["none", "daily", "weekly", "monthly", "manual"];
+const VALID_URL_SCHEMES = new Set(["http:", "https:", "tcp:"]);
+
+function validateUrl(urlStr, field) {
+  if (!urlStr) return null;
+  try {
+    const { protocol } = new URL(urlStr);
+    if (!VALID_URL_SCHEMES.has(protocol)) return `${field} must use http, https, or tcp scheme`;
+  } catch {
+    return `${field} is not a valid URL`;
+  }
+  return null;
+}
 
 function validate(body) {
   const errors = [];
@@ -22,6 +34,11 @@ function validate(body) {
   if (!VALID_RUNTIME_TYPES.includes(body.runtime_type)) errors.push("invalid runtime_type");
   if (!body.owner?.trim())        errors.push("owner is required");
   if (!VALID_BACKUP_POLICIES.includes(body.backup_policy)) errors.push("invalid backup_policy");
+  const urlFields = { health_endpoint: body.health_endpoint, access_url: body.access_url, recovery_runbook_url: body.recovery_runbook_url };
+  for (const [field, val] of Object.entries(urlFields)) {
+    const err = validateUrl(val, field);
+    if (err) errors.push(err);
+  }
   return errors;
 }
 

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import Docker from "dockerode";
+import { getDocker } from "../dockerClient.js";
 import os from "os";
 import { execSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, rmSync } from "fs";
@@ -10,7 +10,7 @@ import { recordChange } from "./governance.js";
 
 export const actionsRouter = Router();
 
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+const docker = getDocker();
 
 const MAINTENANCE_FILE = "/tmp/pn-maintenance.json";
 
