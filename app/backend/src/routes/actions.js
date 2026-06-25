@@ -61,6 +61,10 @@ const CONTAINER_ALLOWLIST = new Set([
 const COOLDOWN_MS = 60_000;
 const actionCooldowns = new Map(); // containerId → lastActionTs (ms)
 
+// Docker image reference: registry/namespace/name:tag[@digest]
+// Permits only safe characters — rejects shell metacharacters and control chars.
+const IMAGE_REF_RE = /^[a-z0-9][a-zA-Z0-9._\-/:@]*$/;
+
 // POST /api/actions/run — { action, containerId } (also accepts target for compat)
 // action: "start" | "stop" | "restart"
 // containerId: container id or name
@@ -330,6 +334,8 @@ function pullImage(dockerClient, image) {
 async function executeDeployContainer(containerName, newImage) {
   if (CONTAINER_BLOCKLIST.has(containerName))
     throw new Error(`Container '${containerName}' is protected and cannot be replaced via deploy`);
+  if (!newImage || !IMAGE_REF_RE.test(newImage) || newImage.length > 256)
+    throw new Error("Invalid image reference — must match [registry/][namespace/]name[:tag][@digest] with no special characters");
   const container = docker.getContainer(containerName);
   const info = await container.inspect();
   const oldImage = info.Config.Image;
@@ -460,6 +466,12 @@ actionsRouter.post("/requests", requireRole("operator"), async (req, res) => {
   const ALLOWED_REQUEST_TYPES = new Set(["service.deploy", "container.restart", "container.stop"]);
   if (!ALLOWED_REQUEST_TYPES.has(action_type))
     return res.status(400).json({ ok: false, error: `Unknown action_type '${action_type}' — must be one of: ${[...ALLOWED_REQUEST_TYPES].join(", ")}` });
+
+  if (action_type === "service.deploy") {
+    const img = params.new_image;
+    if (!img || !IMAGE_REF_RE.test(img) || img.length > 256)
+      return res.status(400).json({ ok: false, error: "Invalid new_image — must match [registry/][namespace/]name[:tag][@digest] with no special characters" });
+  }
 
   // Get service name if service_id provided
   let service_name = null;
