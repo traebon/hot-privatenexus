@@ -74,6 +74,7 @@ authRouter.get("/callback", async (req, res) => {
     res.redirect("/");
   } catch (err) {
     console.error("[auth] callback error:", err.message);
+    recordAudit(req, "auth.login", null, "failure", { error: err.message });
     res.status(500).send("Authentication failed. Please try again.");
   }
 });
