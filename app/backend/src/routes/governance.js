@@ -169,6 +169,7 @@ governanceRouter.patch("/rules/:key/toggle", requireRole("admin"), async (req, r
       [req.params.key]
     );
     if (!rows.length) return res.status(404).json({ ok: false, error: "Rule not found" });
+    recordAudit(req, "governance.rule.toggle", rows[0].rule_key, "success", { enabled: rows[0].enabled, severity: rows[0].severity });
     res.json({ ok: true, rule: rows[0] });
   } catch (err) {
     console.error("[governance] error:", err.message);
@@ -210,6 +211,7 @@ governanceRouter.post("/exceptions", requireRole("admin"), async (req, res) => {
       [HOT_TENANT_ID, service_id, rule_key, reason, expires_at || null,
        req.session?.user?.username || "unknown"]
     );
+    recordAudit(req, "governance.exception.create", rule_key, "success", { service_id, reason, expires_at: expires_at || null });
     res.status(201).json({ ok: true, exception: rows[0] });
   } catch (err) {
     console.error("[governance] error:", err.message);
@@ -220,10 +222,12 @@ governanceRouter.post("/exceptions", requireRole("admin"), async (req, res) => {
 // DELETE /api/governance/exceptions/:id — admin
 governanceRouter.delete("/exceptions/:id", requireRole("admin"), async (req, res) => {
   try {
-    await getPool().query(
-      `DELETE FROM policy_exceptions WHERE id = $1 AND tenant_id = $2`,
+    const { rows } = await getPool().query(
+      `DELETE FROM policy_exceptions WHERE id = $1 AND tenant_id = $2 RETURNING *`,
       [req.params.id, HOT_TENANT_ID]
     );
+    if (!rows.length) return res.status(404).json({ ok: false, error: "Exception not found" });
+    recordAudit(req, "governance.exception.delete", rows[0].rule_key, "success", { service_id: rows[0].service_id, reason: rows[0].reason });
     res.json({ ok: true });
   } catch (err) {
     console.error("[governance] error:", err.message);
