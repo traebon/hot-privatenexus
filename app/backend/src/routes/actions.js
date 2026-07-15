@@ -347,6 +347,18 @@ async function executeDeployContainer(containerName, newImage) {
     throw new Error(`Container '${containerName}' is protected and cannot be replaced via deploy`);
   if (!newImage || !IMAGE_REF_RE.test(newImage) || newImage.length > 256)
     throw new Error("Invalid image reference — must match [registry/][namespace/]name[:tag][@digest] with no special characters");
+  // Shared with /run's cooldown map (keyed there by container ID; here by
+  // containerName — two namespaces in the same Map, same limitation already
+  // documented in intelligence.js). Deploy/rollback recreate the container
+  // entirely (stop+remove+create) — a double-click or two near-simultaneous
+  // calls racing each other here is worse than a plain restart double-fire,
+  // and this function had no cooldown protection at all across any of its
+  // three callers (/deploy, /rollback, /requests/:id/approve's service.deploy).
+  const lastTs = actionCooldowns.get(containerName) || 0;
+  const elapsed = Date.now() - lastTs;
+  if (elapsed < COOLDOWN_MS)
+    throw new Error(`Cooldown active — wait ${Math.ceil((COOLDOWN_MS - elapsed) / 1000)}s before retrying`);
+  actionCooldowns.set(containerName, Date.now());
   const container = docker.getContainer(containerName);
   const info = await container.inspect();
   const oldImage = info.Config.Image;

@@ -678,6 +678,7 @@ function PrivateNexusDashboard({ authUser }) {
   const [deployForm, setDeployForm]             = useState({ new_image: "", force: false });
   const [deploySaving, setDeploySaving]         = useState(false);
   const [deployError, setDeployError]           = useState(null);
+  const [rollbackSaving, setRollbackSaving]     = useState(false);
   const [rollbackPoints, setRollbackPoints]     = useState({});
 
   // Intelligence board
@@ -3167,18 +3168,24 @@ function PrivateNexusDashboard({ authUser }) {
   }
 
   async function doRollback(svc) {
+    if (rollbackSaving) return;
     const points = rollbackPoints[svc.container_name];
     if (!points?.length) return;
-    const res = await fetch(`${API_BASE}/api/actions/rollback`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ service_id: svc.id, container_name: svc.container_name }),
-    });
-    const d = await res.json();
-    if (!d.ok) alert(d.error);
-    else {
-      const rpRes = await fetch(`${API_BASE}/api/actions/rollback-points/${svc.container_name}`);
-      const rpData = await rpRes.json();
-      if (rpData.ok) setRollbackPoints(p => ({ ...p, [svc.container_name]: rpData.points }));
+    setRollbackSaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/actions/rollback`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ service_id: svc.id, container_name: svc.container_name }),
+      });
+      const d = await res.json();
+      if (!d.ok) alert(d.error);
+      else {
+        const rpRes = await fetch(`${API_BASE}/api/actions/rollback-points/${svc.container_name}`);
+        const rpData = await rpRes.json();
+        if (rpData.ok) setRollbackPoints(p => ({ ...p, [svc.container_name]: rpData.points }));
+      }
+    } finally {
+      setRollbackSaving(false);
     }
   }
 
@@ -3698,9 +3705,9 @@ function PrivateNexusDashboard({ authUser }) {
               </button>
               <button
                 onClick={() => { loadRollbackPoints(selectedService.container_name); doRollback(selectedService); }}
-                disabled={!rollbackPoints[selectedService.container_name]?.length}
+                disabled={rollbackSaving || !rollbackPoints[selectedService.container_name]?.length}
                 className="rounded-lg border border-amber-400/30 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-300 hover:bg-amber-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-                Rollback
+                {rollbackSaving ? "Rolling back…" : "Rollback"}
               </button>
               {rollbackPoints[selectedService.container_name]?.length > 0 && (
                 <div className="text-xs text-neutral-500">
