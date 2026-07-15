@@ -200,8 +200,23 @@ export async function runIntelligenceScan() {
   );
   const autoMap = new Map(autoPolicies.map(p => [`${p.signal_type}:${p.action_type}`, p]));
 
-  // Rate-limit tracking for autonomous execution (in-memory per scan)
+  // Rate-limit tracking for autonomous execution. Seeded from actual executed
+  // proposals in the last hour (not just this scan pass) — an in-memory-only
+  // counter reset on every call would never actually enforce max_per_hour
+  // across repeated scans (manual "Run Scan" clicks, or the scheduler's own
+  // 5-cycle interval), since openSet already prevents the same signal firing
+  // twice within one pass, so the local counter could basically never exceed 1
+  // regardless of the configured limit.
+  const { rows: recentExecs } = await pool.query(
+    `SELECT service_id, action_type, COUNT(*)::int AS n
+     FROM remediation_proposals
+     WHERE tenant_id=$1 AND status='executed' AND reviewed_by='autonomous'
+       AND executed_at > NOW() - INTERVAL '1 hour'
+     GROUP BY service_id, action_type`,
+    [HOT_TENANT_ID]
+  );
   const autoExecuted = {};
+  for (const r of recentExecs) autoExecuted[`${r.service_id}:${r.action_type}`] = r.n;
 
   const eventsByService = {};
   for (const id of ids) eventsByService[id] = [];
