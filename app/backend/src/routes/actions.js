@@ -60,9 +60,13 @@ const CONTAINER_ALLOWLIST = new Set([
   "privatenexus-backend",
 ]);
 
-// Per-container cooldown: prevents rapid-fire actions (e.g. accidental double-click restart)
-const COOLDOWN_MS = 60_000;
-const actionCooldowns = new Map(); // containerId → lastActionTs (ms)
+// Per-container cooldown: prevents rapid-fire actions (e.g. accidental double-click restart).
+// Exported and shared with intelligence.js's remediation executor — a restart
+// triggered via the Stacks board and one triggered via MCP/autonomous
+// remediation must rate-limit against the same container, not two independent
+// 60s windows that together allow effectively-unlimited rapid restarts.
+export const COOLDOWN_MS = 60_000;
+export const actionCooldowns = new Map(); // containerId → lastActionTs (ms)
 
 // Docker image reference: registry/namespace/name:tag[@digest]
 // Permits only safe characters — rejects shell metacharacters and control chars.

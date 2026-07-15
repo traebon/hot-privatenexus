@@ -5,7 +5,7 @@ import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
 import { recordChange } from "./governance.js";
 import { getDocker } from "../dockerClient.js";
-import { CONTAINER_BLOCKLIST } from "./actions.js";
+import { CONTAINER_BLOCKLIST, COOLDOWN_MS, actionCooldowns } from "./actions.js";
 
 export const intelligenceRouter = Router();
 
@@ -141,6 +141,17 @@ async function executeAction(svc, actionType) {
     if (!svc.container_name) return { ok: false, error: "No container_name on service" };
     if (CONTAINER_BLOCKLIST.has(svc.container_name))
       return { ok: false, error: `Container '${svc.container_name}' is protected and cannot be restarted via remediation` };
+    // Shares actions.js's cooldown map (keyed there by container ID, here by
+    // container_name — not perfectly unified across both entry points, but
+    // this closes the actual gap: this path had zero cooldown at all before,
+    // and nothing in the frontend ever reaches it — only MCP's
+    // pn_restart_service and the autonomous scanner do.
+    const lastTs = actionCooldowns.get(svc.container_name) || 0;
+    const elapsed = Date.now() - lastTs;
+    if (elapsed < COOLDOWN_MS) {
+      return { ok: false, error: `Cooldown active — wait ${Math.ceil((COOLDOWN_MS - elapsed) / 1000)}s before retrying` };
+    }
+    actionCooldowns.set(svc.container_name, Date.now());
     try {
       await docker.getContainer(svc.container_name).restart({ t: 10 });
       return { ok: true, restarted: svc.container_name };
