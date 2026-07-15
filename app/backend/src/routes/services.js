@@ -374,6 +374,7 @@ servicesRouter.post("/workspaces", requireRole("admin"), async (req, res) => {
       "INSERT INTO workspaces (tenant_id, name, slug) VALUES ($1, $2, $3) RETURNING id, name, slug",
       [HOT_TENANT_ID, name.trim(), slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-")]
     );
+    recordAudit(req, "workspace.create", rows[0].slug, "success");
     res.status(201).json({ ok: true, workspace: rows[0] });
   } catch (err) {
     if (err.code === "23505") return res.status(409).json({ ok: false, error: "Slug already in use" });
@@ -392,6 +393,7 @@ servicesRouter.patch("/workspaces/:id", requireRole("admin"), async (req, res) =
       [name.trim(), (slug || name).trim().toLowerCase().replace(/[^a-z0-9-]/g, "-"), req.params.id, HOT_TENANT_ID]
     );
     if (!rows.length) return res.status(404).json({ ok: false, error: "Not found" });
+    recordAudit(req, "workspace.update", rows[0].slug, "success");
     res.json({ ok: true, workspace: rows[0] });
   } catch (err) {
     if (err.code === "23505") return res.status(409).json({ ok: false, error: "Slug already in use" });
@@ -403,14 +405,15 @@ servicesRouter.patch("/workspaces/:id", requireRole("admin"), async (req, res) =
 // DELETE /api/services/workspaces/:id — delete a workspace (admin+)
 servicesRouter.delete("/workspaces/:id", requireRole("admin"), async (req, res) => {
   // Reassign any services in this workspace to null first
-  await getPool().query(
+  const { rowCount: reassigned } = await getPool().query(
     "UPDATE services SET workspace_id=NULL WHERE workspace_id=$1 AND tenant_id=$2",
     [req.params.id, HOT_TENANT_ID]
   );
-  const { rowCount } = await getPool().query(
-    "DELETE FROM workspaces WHERE id=$1 AND tenant_id=$2",
+  const { rows } = await getPool().query(
+    "DELETE FROM workspaces WHERE id=$1 AND tenant_id=$2 RETURNING slug",
     [req.params.id, HOT_TENANT_ID]
   );
-  if (!rowCount) return res.status(404).json({ ok: false, error: "Not found" });
+  if (!rows.length) return res.status(404).json({ ok: false, error: "Not found" });
+  recordAudit(req, "workspace.delete", rows[0].slug, "success", { servicesReassigned: reassigned });
   res.json({ ok: true });
 });

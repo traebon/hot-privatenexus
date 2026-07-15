@@ -505,10 +505,11 @@ recoveryRouter.get("/simulations/:id", requireRole("viewer"), async (req, res) =
 recoveryRouter.delete("/simulations/:id", requireRole("admin"), async (req, res) => {
   try {
     const { rows: [row] } = await getPool().query(
-      "DELETE FROM recovery_simulations WHERE id = $1 AND tenant_id = $2 RETURNING id",
+      "DELETE FROM recovery_simulations WHERE id = $1 AND tenant_id = $2 RETURNING id, scenario_type, target_name",
       [req.params.id, HOT_TENANT_ID]
     );
     if (!row) return res.status(404).json({ ok: false, error: "Not found" });
+    recordAudit(req, "recovery.simulation.delete", row.target_name, "success", { scenario_type: row.scenario_type });
     res.json({ ok: true });
   } catch (err) {
     console.error("[recovery] error:", err.message);
@@ -569,10 +570,11 @@ recoveryRouter.post("/restore-tests", requireRole("operator"), async (req, res) 
 recoveryRouter.delete("/restore-tests/:id", requireRole("admin"), async (req, res) => {
   try {
     const { rows: [row] } = await getPool().query(
-      "DELETE FROM restore_tests WHERE id = $1 AND tenant_id = $2 RETURNING id",
+      "DELETE FROM restore_tests WHERE id = $1 AND tenant_id = $2 RETURNING id, test_type, outcome",
       [req.params.id, HOT_TENANT_ID]
     );
     if (!row) return res.status(404).json({ ok: false, error: "Not found" });
+    recordAudit(req, "recovery.restore_test.delete", req.params.id, "success", { test_type: row.test_type, outcome: row.outcome });
     res.json({ ok: true });
   } catch (err) {
     console.error("[recovery] error:", err.message);
