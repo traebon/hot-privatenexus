@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { getDocker } from "../dockerClient.js";
 import { requireRole } from "../middleware/requireRole.js";
+import { getPool, HOT_TENANT_ID } from "../db.js";
 
 export const stacksRouter = Router();
 
@@ -14,12 +15,14 @@ function validateContainerId(id) {
   return typeof id === "string" && CONTAINER_ID_RE.test(id);
 }
 
-function formatContainer(c) {
+function formatContainer(c, registryByName) {
   const labels = c.Labels || {};
+  const name = (c.Names?.[0] || "").replace(/^\//, "");
+  const registered = registryByName.get(name);
   return {
     id: c.Id.slice(0, 12),
     fullId: c.Id,
-    name: (c.Names?.[0] || "").replace(/^\//, ""),
+    name,
     image: c.Image,
     status: c.Status,
     state: c.State,
@@ -30,14 +33,26 @@ function formatContainer(c) {
     project: labels["com.docker.compose.project"] || null,
     service: labels["com.docker.compose.service"] || null,
     composeFile: labels["com.docker.compose.project.config_files"] || null,
+    // Present only when this container is a registered service — lets the
+    // frontend pass service_id to /api/actions/run/v2 for blast-radius
+    // checking. Unregistered containers get no dependency protection.
+    serviceId:   registered?.id   ?? null,
+    serviceName: registered?.name ?? null,
   };
 }
 
 // GET /api/stacks — all containers grouped by compose project
 stacksRouter.get("/", requireRole("viewer"), async (_req, res) => {
   try {
-    const raw = await docker.listContainers({ all: true });
-    const containers = raw.map(formatContainer);
+    const [raw, registryRows] = await Promise.all([
+      docker.listContainers({ all: true }),
+      getPool().query(
+        "SELECT id, name, container_name FROM services WHERE tenant_id = $1 AND container_name IS NOT NULL AND archived = FALSE",
+        [HOT_TENANT_ID]
+      ),
+    ]);
+    const registryByName = new Map(registryRows.rows.map((r) => [r.container_name, r]));
+    const containers = raw.map((c) => formatContainer(c, registryByName));
 
     const projectMap = {};
     for (const c of containers) {

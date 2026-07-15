@@ -46,7 +46,10 @@ function PrivateNexusDashboard({ authUser }) {
     const [inspectLoading, setInspectLoading] = useState(false);
 
     // Action confirmation modal state
-    const [pendingConfirm, setPendingConfirm] = useState(null); // { containerId, containerName, action }
+    const [pendingConfirm, setPendingConfirm] = useState(null); // { containerId, containerName, action, serviceId, serviceName }
+    // Blast-radius follow-up modal — shown when /run/v2 reports hard downstream dependencies
+    const [blastConfirm, setBlastConfirm] = useState(null); // { containerId, containerName, action, serviceId, hardDeps, affected }
+    const [actionInfo, setActionInfo] = useState(null); // non-error status, e.g. "queued for approval"
 
     // Health badge config — covers all Docker states
     const healthBadge = {
@@ -91,18 +94,32 @@ function PrivateNexusDashboard({ authUser }) {
       }
     }, [logsLines, autoScroll]);
 
-    const runAction = async (containerId, action) => {
+    const runAction = async (containerId, action, { serviceId, containerName, force } = {}) => {
       const key = `${containerId}:${action}`;
       setActionPending(key);
       setActionError(null);
+      setActionInfo(null);
       try {
-        const res = await fetch(`${API_BASE}/api/actions/run`, {
+        const res = await fetch(`${API_BASE}/api/actions/run/v2`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action, containerId }),
+          body: JSON.stringify({ action, containerId, service_id: serviceId || undefined, force: !!force }),
         });
         const data = await res.json();
-        if (!res.ok) setActionError(`${action} failed: ${data.error}`);
+
+        if (res.status === 409 && data.blast_radius) {
+          // Hard downstream dependencies found — let the operator see them and force through if intended.
+          setBlastConfirm({ containerId, containerName, action, serviceId, hardDeps: data.hard_deps, affected: data.affected });
+          return;
+        }
+        if (res.status === 202 && data.queued) {
+          setActionInfo(`${action} on ${containerName || containerId} requires approval — queued (request #${data.requestId}).`);
+          return;
+        }
+        if (!res.ok) {
+          setActionError(`${action} failed: ${data.error}`);
+          return;
+        }
         await loadStacks();
       } catch (err) {
         setActionError(`${action} failed: ${err.message}`);
@@ -164,9 +181,15 @@ function PrivateNexusDashboard({ authUser }) {
               <div className="font-mono text-neutral-200">{pendingConfirm.containerName}</div>
               <div>{pendingConfirm.action === "restart" ? "This will restart the container. Active connections will be dropped briefly." : pendingConfirm.action === "stop" ? "This will stop the container. The service will be unavailable until manually started." : "This will start the container."}</div>
               {(pendingConfirm.action === "stop" || pendingConfirm.action === "restart") && (
-                <div className="rounded-lg border border-orange-400/20 bg-orange-500/5 px-3 py-2 text-xs text-orange-300/80">
-                  <span className="font-medium">Blast-radius check:</span> The server will verify downstream dependencies before executing. If hard dependencies are affected, the action may be blocked or require approval.
-                </div>
+                pendingConfirm.serviceId ? (
+                  <div className="rounded-lg border border-orange-400/20 bg-orange-500/5 px-3 py-2 text-xs text-orange-300/80">
+                    <span className="font-medium">Blast-radius check:</span> the server will verify downstream dependencies for "{pendingConfirm.serviceName}" before executing. If hard dependencies are affected, you'll be asked to confirm again.
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-neutral-700 bg-neutral-800/40 px-3 py-2 text-xs text-neutral-400">
+                    This container isn't linked to a registered service, so no dependency check is possible — approve it in Discovery to enable blast-radius protection.
+                  </div>
+                )
               )}
               <div className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
                 This action will be recorded in the audit log.
@@ -176,7 +199,7 @@ function PrivateNexusDashboard({ authUser }) {
               <button onClick={() => setPendingConfirm(null)}
                 className="rounded-lg border border-neutral-700 px-4 py-2 text-xs text-neutral-400 hover:text-white">Cancel</button>
               <button
-                onClick={() => { const { containerId, action } = pendingConfirm; setPendingConfirm(null); runAction(containerId, action); }}
+                onClick={() => { const { containerId, containerName, action, serviceId } = pendingConfirm; setPendingConfirm(null); runAction(containerId, action, { serviceId, containerName }); }}
                 className={["rounded-lg border px-4 py-2 text-xs",
                   pendingConfirm.action === "stop"    ? "border-rose-400/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20" :
                   pendingConfirm.action === "restart" ? "border-amber-400/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20" :
@@ -184,6 +207,48 @@ function PrivateNexusDashboard({ authUser }) {
                 Confirm {pendingConfirm.action}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* Blast-radius follow-up modal — shown when /run/v2 finds hard downstream dependencies */}
+      {blastConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-rose-400/30 bg-neutral-950 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-neutral-800 px-6 py-4">
+              <div className="text-base font-semibold text-rose-300">Hard dependencies affected</div>
+              <button onClick={() => setBlastConfirm(null)} className="text-neutral-500 hover:text-white text-lg">✕</button>
+            </div>
+            <div className="px-6 py-4 space-y-2 text-sm text-neutral-400">
+              <div>
+                {blastConfirm.hardDeps} service{blastConfirm.hardDeps === 1 ? "" : "s"} depend{blastConfirm.hardDeps === 1 ? "s" : ""} hard on
+                {" "}<span className="font-mono text-neutral-200">{blastConfirm.containerName}</span> and will likely break if you {blastConfirm.action} it:
+              </div>
+              <ul className="space-y-1 rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-xs">
+                {(blastConfirm.affected || []).map((dep, i) => (
+                  <li key={i} className="flex items-center justify-between">
+                    <span className="font-mono text-neutral-300">{dep.name}</span>
+                    <span className="text-neutral-500">{dep.dep_type} · {dep.status}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-neutral-800 px-6 py-4">
+              <button onClick={() => setBlastConfirm(null)}
+                className="rounded-lg border border-neutral-700 px-4 py-2 text-xs text-neutral-400 hover:text-white">Cancel</button>
+              <button
+                onClick={() => { const { containerId, containerName, action, serviceId } = blastConfirm; setBlastConfirm(null); runAction(containerId, action, { serviceId, containerName, force: true }); }}
+                className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-xs text-rose-300 hover:bg-rose-500/20">
+                {blastConfirm.action} anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {actionInfo && (
+        <div className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border border-sky-400/30 bg-sky-500/10 px-4 py-3 text-xs text-sky-300 shadow-xl">
+          <div className="flex items-start justify-between gap-3">
+            <span>{actionInfo}</span>
+            <button onClick={() => setActionInfo(null)} className="text-sky-400/70 hover:text-white">✕</button>
           </div>
         </div>
       )}
@@ -288,7 +353,7 @@ function PrivateNexusDashboard({ authUser }) {
                             <button
                               disabled={!!actionPending || !can("operator")}
                               title={!can("operator") ? "Requires operator role" : undefined}
-                              onClick={() => setPendingConfirm({ containerId: c.id, containerName: c.name || c.id, action: "restart" })}
+                              onClick={() => setPendingConfirm({ containerId: c.id, containerName: c.name || c.id, action: "restart", serviceId: c.serviceId, serviceName: c.serviceName })}
                               className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               {actionPending === `${c.id}:restart` ? "…" : "Restart"}
@@ -296,7 +361,7 @@ function PrivateNexusDashboard({ authUser }) {
                             <button
                               disabled={!!actionPending || !can("operator")}
                               title={!can("operator") ? "Requires operator role" : undefined}
-                              onClick={() => setPendingConfirm({ containerId: c.id, containerName: c.name || c.id, action: "stop" })}
+                              onClick={() => setPendingConfirm({ containerId: c.id, containerName: c.name || c.id, action: "stop", serviceId: c.serviceId, serviceName: c.serviceName })}
                               className="rounded-lg border border-rose-400/20 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-300 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               {actionPending === `${c.id}:stop` ? "…" : "Stop"}
@@ -306,7 +371,7 @@ function PrivateNexusDashboard({ authUser }) {
                           <button
                             disabled={!!actionPending || !can("operator")}
                             title={!can("operator") ? "Requires operator role" : undefined}
-                            onClick={() => setPendingConfirm({ containerId: c.id, containerName: c.name || c.id, action: "start" })}
+                            onClick={() => setPendingConfirm({ containerId: c.id, containerName: c.name || c.id, action: "start", serviceId: c.serviceId, serviceName: c.serviceName })}
                             className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                           >
                             {actionPending === `${c.id}:start` ? "…" : "Start"}

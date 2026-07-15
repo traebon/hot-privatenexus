@@ -547,6 +547,12 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
     }
     const description = candidate.suggested_description || null;
     const wsId        = candidate.suggested_workspace_id || null;
+    // Only docker-sourced candidates carry an actual Docker container name in
+    // raw_name (Proxmox/Caddy sources have hostnames/routes there instead) —
+    // this is what lets /api/actions/run/v2's blast-radius check and the
+    // MCP-triggered autonomous restart (routes/intelligence.js) find the
+    // right container for a registered service.
+    const containerName = runtime === "docker" ? (candidate.raw_name || null) : null;
 
     if (!slug || !name) {
       return res.status(400).json({ ok: false, error: "slug and name required before approving" });
@@ -564,14 +570,14 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
     const { rows: svcRows } = await pool.query(
       `INSERT INTO services
          (tenant_id, workspace_id, name, slug, description, category,
-          access_mode, runtime_type, owner, backup_policy, health_endpoint, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'unknown')
+          access_mode, runtime_type, owner, backup_policy, health_endpoint, status, container_name)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'unknown',$12)
        RETURNING id`,
       [
         HOT_TENANT_ID, wsId, name, slug, description,
         category, accessMode, runtime,
         req.session?.user?.username || "discovered",
-        "unknown", healthEp,
+        "unknown", healthEp, containerName,
       ]
     );
     const newServiceId = svcRows[0].id;

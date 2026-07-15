@@ -4,7 +4,7 @@ import os from "os";
 import { execSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { recordAudit } from "../auditLog.js";
-import { requireRole } from "../middleware/requireRole.js";
+import { requireRole, userRole } from "../middleware/requireRole.js";
 import { getPool, HOT_TENANT_ID } from "../db.js";
 import { recordChange } from "./governance.js";
 
@@ -290,8 +290,12 @@ const ROLE_LEVEL = { viewer: 0, operator: 1, admin: 2, superadmin: 3, breakglass
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// req.session.user only ever carries a `roles` array (set at the Keycloak
+// callback in routes/auth.js) — there is no singular `.role` field. Route
+// through the same userRole() helper requireRole() itself uses, so this
+// stays correct if the session shape ever changes.
 function userRoleLevel(req) {
-  return ROLE_LEVEL[req.session?.user?.role] ?? -1;
+  return ROLE_LEVEL[userRole(req.session)] ?? -1;
 }
 
 function requiredLevel(elevation) {
