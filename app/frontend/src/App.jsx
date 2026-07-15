@@ -629,7 +629,9 @@ function PrivateNexusDashboard({ authUser }) {
   const [govError, setGovError]                 = useState(null);
   const [govTab, setGovTab]                     = useState("recommendations");
   const [govRules, setGovRules]                 = useState([]);
+  const [govRuleToggling, setGovRuleToggling]   = useState(null); // rule_key
   const [govExceptions, setGovExceptions]       = useState([]);
+  const [govExDeleting, setGovExDeleting]       = useState(null); // exception id
   const [govExLoading, setGovExLoading]         = useState(false);
   const [govChangeRecords, setGovChangeRecords] = useState([]);
   const [govCrLoading, setGovCrLoading]         = useState(false);
@@ -711,6 +713,8 @@ function PrivateNexusDashboard({ authUser }) {
   const [discActionPending, setDiscActionPending] = useState(null);
   const [agentTokens, setAgentTokens]         = useState([]);
   const [agentTokensLoading, setAgentTokensLoading] = useState(false);
+  const [agentTokenSaving, setAgentTokenSaving] = useState(false);
+  const [agentTokenRevoking, setAgentTokenRevoking] = useState(null); // token id
   const [newTokenLabel, setNewTokenLabel]     = useState("");
   const [newTokenTTL, setNewTokenTTL]         = useState("168");
   const [createdToken, setCreatedToken]       = useState(null);
@@ -4379,23 +4383,34 @@ function PrivateNexusDashboard({ authUser }) {
   };
 
   const createAgentToken = async () => {
-    if (!newTokenLabel.trim()) return;
-    const r = await fetch("/api/discovery/agent-tokens", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label: newTokenLabel, ttl_hours: Number(newTokenTTL) || null }),
-    });
-    const d = await r.json();
-    if (d.ok) {
-      setCreatedToken(d.token);
-      setNewTokenLabel("");
-      await loadAgentTokens();
+    if (!newTokenLabel.trim() || agentTokenSaving) return;
+    setAgentTokenSaving(true);
+    try {
+      const r = await fetch("/api/discovery/agent-tokens", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: newTokenLabel, ttl_hours: Number(newTokenTTL) || null }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setCreatedToken(d.token);
+        setNewTokenLabel("");
+        await loadAgentTokens();
+      }
+    } finally {
+      setAgentTokenSaving(false);
     }
   };
 
   const revokeAgentToken = async (id) => {
-    await fetch(`/api/discovery/agent-tokens/${id}`, { method: "DELETE" });
-    await loadAgentTokens();
+    if (agentTokenRevoking) return;
+    setAgentTokenRevoking(id);
+    try {
+      await fetch(`/api/discovery/agent-tokens/${id}`, { method: "DELETE" });
+      await loadAgentTokens();
+    } finally {
+      setAgentTokenRevoking(null);
+    }
   };
 
   const completenessBar = (score) => {
@@ -4719,8 +4734,16 @@ function PrivateNexusDashboard({ authUser }) {
 
   // ── Governance helpers ───────────────────────────────────────────────────
   async function toggleRule(key) {
-    await fetch(`${API_BASE}/api/governance/rules/${key}/toggle`, { method: "PATCH" });
-    fetch(`${API_BASE}/api/governance/rules`).then(r=>r.json()).then(d=>{ if(d.ok) setGovRules(d.rules||[]); });
+    if (govRuleToggling) return;
+    setGovRuleToggling(key);
+    try {
+      await fetch(`${API_BASE}/api/governance/rules/${key}/toggle`, { method: "PATCH" });
+      const r = await fetch(`${API_BASE}/api/governance/rules`);
+      const d = await r.json();
+      if (d.ok) setGovRules(d.rules || []);
+    } finally {
+      setGovRuleToggling(null);
+    }
   }
 
   async function submitAddException(e) {
@@ -4742,9 +4765,15 @@ function PrivateNexusDashboard({ authUser }) {
   }
 
   async function deleteException(id) {
-    await fetch(`${API_BASE}/api/governance/exceptions/${id}`, { method: "DELETE" });
-    fetch(`${API_BASE}/api/governance/exceptions`).then(r=>r.json()).then(d=>{ if(d.ok) setGovExceptions(d.exceptions||[]); });
-    fetch(`${API_BASE}/api/governance/recommendations`).then(r=>r.json()).then(d=>{ if(d.ok) { setGovViolations(d.violations||[]); setGovSummary({ critical: d.violations?.filter(v=>v.severity==="critical").length||0, warning: d.violations?.filter(v=>v.severity==="warning").length||0, info: d.violations?.filter(v=>v.severity==="info").length||0, total: d.count||0 }); }});
+    if (govExDeleting) return;
+    setGovExDeleting(id);
+    try {
+      await fetch(`${API_BASE}/api/governance/exceptions/${id}`, { method: "DELETE" });
+      fetch(`${API_BASE}/api/governance/exceptions`).then(r=>r.json()).then(d=>{ if(d.ok) setGovExceptions(d.exceptions||[]); });
+      fetch(`${API_BASE}/api/governance/recommendations`).then(r=>r.json()).then(d=>{ if(d.ok) { setGovViolations(d.violations||[]); setGovSummary({ critical: d.violations?.filter(v=>v.severity==="critical").length||0, warning: d.violations?.filter(v=>v.severity==="warning").length||0, info: d.violations?.filter(v=>v.severity==="info").length||0, total: d.count||0 }); }});
+    } finally {
+      setGovExDeleting(null);
+    }
   }
 
   const SEV_STYLES = {
@@ -4929,8 +4958,9 @@ function PrivateNexusDashboard({ authUser }) {
                   <span className={`shrink-0 rounded border px-1.5 py-0 text-[10px] font-medium ${st.badge}`}>{st.label}</span>
                   {rule.built_in && <span className="shrink-0 text-[10px] text-neutral-600">built-in</span>}
                   <button onClick={() => toggleRule(rule.rule_key)}
-                    className={["shrink-0 rounded px-2 py-0.5 text-[10px] font-medium transition-colors", rule.enabled ? "bg-emerald-500/15 text-emerald-300 hover:bg-rose-500/15 hover:text-rose-300" : "bg-neutral-700 text-neutral-500 hover:bg-emerald-500/15 hover:text-emerald-300"].join(" ")}>
-                    {rule.enabled ? "Enabled" : "Disabled"}
+                    disabled={!!govRuleToggling}
+                    className={["shrink-0 rounded px-2 py-0.5 text-[10px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed", rule.enabled ? "bg-emerald-500/15 text-emerald-300 hover:bg-rose-500/15 hover:text-rose-300" : "bg-neutral-700 text-neutral-500 hover:bg-emerald-500/15 hover:text-emerald-300"].join(" ")}>
+                    {govRuleToggling === rule.rule_key ? "…" : rule.enabled ? "Enabled" : "Disabled"}
                   </button>
                 </div>
               );
@@ -4963,7 +4993,10 @@ function PrivateNexusDashboard({ authUser }) {
                       by {ex.created_by}{ex.expires_at ? ` · expires ${new Date(ex.expires_at).toLocaleDateString()}` : " · no expiry"}
                     </div>
                   </div>
-                  <button onClick={() => deleteException(ex.id)} className="shrink-0 text-[10px] text-neutral-600 hover:text-rose-400 transition-colors">✕</button>
+                  <button onClick={() => deleteException(ex.id)} disabled={!!govExDeleting}
+                    className="shrink-0 text-[10px] text-neutral-600 hover:text-rose-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                    {govExDeleting === ex.id ? "…" : "✕"}
+                  </button>
                 </div>
               );
             })}
@@ -5344,9 +5377,9 @@ function PrivateNexusDashboard({ authUser }) {
               <button
                 className="rounded-lg border border-teal-500/40 bg-teal-600/20 px-3 py-1 text-xs text-teal-300 hover:bg-teal-600/30 disabled:opacity-50"
                 onClick={createAgentToken}
-                disabled={!newTokenLabel.trim()}
+                disabled={!newTokenLabel.trim() || agentTokenSaving}
               >
-                Create
+                {agentTokenSaving ? "Creating…" : "Create"}
               </button>
             </div>
             {agentTokensLoading ? (
@@ -5370,10 +5403,11 @@ function PrivateNexusDashboard({ authUser }) {
                     </div>
                     {!t.revoked && (
                       <button
-                        className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[10px] text-rose-400 hover:bg-rose-500/20"
+                        className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[10px] text-rose-400 hover:bg-rose-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
                         onClick={() => revokeAgentToken(t.id)}
+                        disabled={!!agentTokenRevoking}
                       >
-                        Revoke
+                        {agentTokenRevoking === t.id ? "…" : "Revoke"}
                       </button>
                     )}
                   </div>
