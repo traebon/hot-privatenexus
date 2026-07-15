@@ -42,7 +42,7 @@ function validate(body) {
   return errors;
 }
 
-// GET /api/services?category=&workspace_id=&archived=false
+// GET /api/services?category=&workspace_id=&status=&archived=false
 servicesRouter.get("/", requireRole("viewer"), async (req, res) => {
   try {
     const conditions = ["s.tenant_id = $1"];
@@ -55,6 +55,12 @@ servicesRouter.get("/", requireRole("viewer"), async (req, res) => {
     if (req.query.workspace_id) {
       params.push(req.query.workspace_id);
       conditions.push(`s.workspace_id = $${params.length}`);
+    }
+    if (req.query.status) {
+      if (!VALID_STATUSES.includes(req.query.status))
+        return res.status(400).json({ error: `Invalid status — must be one of: ${VALID_STATUSES.join(", ")}` });
+      params.push(req.query.status);
+      conditions.push(`s.status = $${params.length}`);
     }
     const showArchived = req.query.archived === "true";
     if (!showArchived) conditions.push("s.archived = FALSE");

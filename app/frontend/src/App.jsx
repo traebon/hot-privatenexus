@@ -731,6 +731,7 @@ function PrivateNexusDashboard({ authUser }) {
   const [servicesError, setServicesError] = useState(null);
   const [serviceGroupBy, setServiceGroupBy] = useState("category");
   const [serviceCategoryFilter, setServiceCategoryFilter] = useState("all");
+  const [serviceStatusFilter, setServiceStatusFilter] = useState("all");
   const [showServiceModal, setShowServiceModal] = useState(false);
   const [editingService, setEditingService] = useState(null);
   const [serviceForm, setServiceForm] = useState({});
@@ -840,11 +841,12 @@ function PrivateNexusDashboard({ authUser }) {
     const params = new URLSearchParams();
     if (activeBoard === "Inventory" && showArchivedServices) params.set("archived", "true");
     if (activeBoard === "Inventory" && serviceCategoryFilter !== "all") params.set("category", serviceCategoryFilter);
+    if (activeBoard === "Inventory" && serviceStatusFilter !== "all") params.set("status", serviceStatusFilter);
     fetch(`${API_BASE}/api/services?${params}`)
       .then((r) => r.json())
       .then((data) => { setServicesData(Array.isArray(data) ? data : []); setServicesLoading(false); })
       .catch(() => { setServicesError("Failed to load service registry"); setServicesLoading(false); });
-  }, [activeBoard, showArchivedServices, serviceCategoryFilter, API_BASE]);
+  }, [activeBoard, showArchivedServices, serviceCategoryFilter, serviceStatusFilter, API_BASE]);
 
   useEffect(() => {
     if (activeBoard !== "Inventory") return;
@@ -2326,6 +2328,46 @@ function PrivateNexusDashboard({ authUser }) {
                   st === "healthy" ? "text-emerald-400" : st === "down" ? "text-rose-400" : st === "degraded" || st === "warning" ? "text-amber-400" : "text-neutral-500"
                 ].join(" ")}>{n} {st}</span>
               ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Workspace view — health broken down by workspace */}
+      {servicesData.length > 0 && (() => {
+        const byWorkspace = {};
+        for (const s of servicesData) {
+          if (s.archived) continue;
+          const key = s.workspace_name || "Unassigned";
+          if (!byWorkspace[key]) byWorkspace[key] = [];
+          byWorkspace[key].push(s);
+        }
+        const workspaces = Object.entries(byWorkspace).sort(([a], [b]) => a.localeCompare(b));
+        if (!workspaces.length) return null;
+        return (
+          <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-sm font-semibold text-neutral-200">Workspaces</div>
+              <button onClick={() => setActiveBoard("Inventory")} className="text-[10px] text-neutral-600 hover:text-neutral-300">View all →</button>
+            </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {workspaces.map(([name, svcs]) => {
+                const healthy = svcs.filter((s) => s.status === "healthy").length;
+                const down = svcs.filter((s) => s.status === "down").length;
+                const degraded = svcs.filter((s) => s.status === "degraded" || s.status === "warning").length;
+                return (
+                  <button key={name}
+                    onClick={() => { setActiveBoard("Inventory"); setServiceGroupBy("workspace"); }}
+                    className="flex items-center justify-between rounded-xl border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-left transition hover:border-teal-400/30">
+                    <span className="truncate text-xs font-medium text-neutral-300">{name}</span>
+                    <span className="ml-2 flex shrink-0 items-center gap-1.5 text-[10px]">
+                      <span className={down > 0 ? "text-rose-300" : degraded > 0 ? "text-amber-300" : "text-emerald-300"}>{healthy}/{svcs.length}</span>
+                      {down > 0 && <span className="rounded-full bg-rose-500/15 px-1.5 py-0.5 text-rose-300">{down} down</span>}
+                      {degraded > 0 && <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-amber-300">{degraded} degraded</span>}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         );
@@ -5570,6 +5612,15 @@ function PrivateNexusDashboard({ authUser }) {
           <option value="admin">Admin</option>
           <option value="business">Business</option>
           <option value="personal">Personal</option>
+        </select>
+        <select value={serviceStatusFilter} onChange={(e) => setServiceStatusFilter(e.target.value)}
+          className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-300 focus:border-teal-400/50 focus:outline-none">
+          <option value="all">All statuses</option>
+          <option value="healthy">Healthy</option>
+          <option value="warning">Warning</option>
+          <option value="degraded">Degraded</option>
+          <option value="down">Down</option>
+          <option value="unknown">Unknown</option>
         </select>
         <label className="flex items-center gap-1.5 cursor-pointer text-xs text-neutral-400">
           <input type="checkbox" checked={showArchivedServices} onChange={(e) => setShowArchivedServices(e.target.checked)}
