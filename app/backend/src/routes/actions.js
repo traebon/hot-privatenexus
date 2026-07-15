@@ -172,6 +172,32 @@ actionsRouter.post("/emergency", requireRole("admin"), async (req, res) => {
     return res.status(400).json({ ok: false, error: `Unknown emergency action: ${action}` });
   }
 
+  // Fleet-wide stop-all has a seeded action_policies row (elevation_required=
+  // superadmin, cooldown_secs=3600) that this route never consulted at all —
+  // requireRole("admin") above let plain admins trigger it immediately,
+  // repeatedly. Enforcing elevation + cooldown here (not requires_approval —
+  // dual-control on the single highest-blast-radius action would lock out a
+  // solo operator during a real emergency, a deliberate choice, not an
+  // oversight). restart-all has no seeded policy row, so it's intentionally
+  // left at the admin-only bar this route always had.
+  if (action === "stacks.stop-all") {
+    const policy = await getPolicy("emergency.stop-all");
+    if (policy?.elevation_required && userRoleLevel(req) < requiredLevel(policy.elevation_required)) {
+      recordAudit(req, "emergency.stacks.stop-all.blocked", null, "failure", { reason: "elevation_required", required: policy.elevation_required });
+      return res.status(403).json({ ok: false, error: `Action requires ${policy.elevation_required} role or higher` });
+    }
+    if (policy?.cooldown_secs) {
+      const cooldownKey = "emergency:stacks.stop-all";
+      const cooldownMs  = policy.cooldown_secs * 1000;
+      const lastTs      = actionCooldowns.get(cooldownKey) || 0;
+      const elapsed     = Date.now() - lastTs;
+      if (elapsed < cooldownMs) {
+        return res.status(429).json({ ok: false, error: `Cooldown active — wait ${Math.ceil((cooldownMs - elapsed) / 1000)}s before retrying` });
+      }
+      actionCooldowns.set(cooldownKey, Date.now());
+    }
+  }
+
   try {
     if (action === "stacks.stop-all") {
       const list = await docker.listContainers({ all: false });
