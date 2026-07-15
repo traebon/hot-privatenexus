@@ -5,6 +5,7 @@ import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
 import { recordChange } from "./governance.js";
 import { getDocker } from "../dockerClient.js";
+import { CONTAINER_BLOCKLIST } from "./actions.js";
 
 export const intelligenceRouter = Router();
 
@@ -138,6 +139,8 @@ async function executeAction(svc, actionType) {
   if (actionType === "health.refresh") return probeService(svc);
   if (actionType === "container.restart") {
     if (!svc.container_name) return { ok: false, error: "No container_name on service" };
+    if (CONTAINER_BLOCKLIST.has(svc.container_name))
+      return { ok: false, error: `Container '${svc.container_name}' is protected and cannot be restarted via remediation` };
     try {
       await docker.getContainer(svc.container_name).restart({ t: 10 });
       return { ok: true, restarted: svc.container_name };

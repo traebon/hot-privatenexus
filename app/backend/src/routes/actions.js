@@ -45,7 +45,10 @@ const ALLOWED_ACTIONS = new Set(["start", "stop", "restart"]);
 
 // Containers that may never be stopped or restarted via the actions API.
 // Stopping the database or cache mid-session causes data loss and session wipe.
-const CONTAINER_BLOCKLIST = new Set([
+// Exported: routes/intelligence.js's autonomous/human-approved remediation
+// executor has its own container.restart path and must enforce this too —
+// it does not go through this router at all.
+export const CONTAINER_BLOCKLIST = new Set([
   "privatenexus-db",
   "privatenexus-redis",
 ]);
