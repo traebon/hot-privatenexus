@@ -17,6 +17,12 @@ function validateZone(zone) {
     && !zone.includes("..");
 }
 
+// SOA/NS records are the zone's own authority chain — deleting or replacing
+// them breaks DNS resolution for the entire domain. The frontend already
+// hides edit/delete for these (LOCKED_TYPES in App.jsx), but that's a UI
+// affordance only — nothing stopped a direct API call. Enforce it here too.
+const LOCKED_RECORD_TYPES = new Set(["SOA", "NS"]);
+
 async function pdns(method, path, body) {
   const opts = {
     method,
@@ -69,6 +75,9 @@ dnsRouter.post("/zones/:zone/records", requireRole("operator"), async (req, res)
   if (!name || !type || !records?.length) {
     return res.status(400).json({ ok: false, error: "name, type, and records are required" });
   }
+  if (LOCKED_RECORD_TYPES.has(type)) {
+    return res.status(403).json({ ok: false, error: `${type} records are protected — cannot be created or replaced via this API` });
+  }
   const fqdn = name.endsWith(".") ? name : `${name}.`;
   try {
     await pdns("PATCH", `/zones/${req.params.zone}`, {
@@ -85,6 +94,9 @@ dnsRouter.delete("/zones/:zone/records", requireRole("operator"), async (req, re
   if (!validateZone(req.params.zone)) return res.status(400).json({ ok: false, error: "invalid zone name" });
   const { name, type } = req.body;
   if (!name || !type) return res.status(400).json({ ok: false, error: "name and type are required" });
+  if (LOCKED_RECORD_TYPES.has(type)) {
+    return res.status(403).json({ ok: false, error: `${type} records are protected — cannot be deleted via this API` });
+  }
   const fqdn = name.endsWith(".") ? name : `${name}.`;
   try {
     await pdns("PATCH", `/zones/${req.params.zone}`, {
