@@ -188,6 +188,18 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS disc_tenant_status_idx ON discovery_candidates (tenant_id, status);
     CREATE INDEX IF NOT EXISTS disc_source_idx        ON discovery_candidates (source);
     CREATE INDEX IF NOT EXISTS disc_slug_idx          ON discovery_candidates (tenant_id, suggested_slug);
+    -- De-dupe any rows from before this constraint existed, keeping the most recent per identity
+    DELETE FROM discovery_candidates
+      WHERE id IN (
+        SELECT id FROM (
+          SELECT id, ROW_NUMBER() OVER (
+            PARTITION BY tenant_id, source, raw_name
+            ORDER BY discovered_at DESC, id DESC
+          ) AS rn
+          FROM discovery_candidates
+        ) ranked WHERE rn > 1
+      );
+    CREATE UNIQUE INDEX IF NOT EXISTS disc_dedup_idx ON discovery_candidates (tenant_id, source, raw_name);
   `);
 
   // Agent tokens for discovery ingest (scoped, expirable, revocable)

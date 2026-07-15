@@ -138,8 +138,14 @@ app.get("/api/health", (_req, res) =>
 );
 app.use("/api/auth", authRouter);
 
-// All remaining /api/* routes require a valid session
-app.use("/api", requireAuth);
+// All remaining /api/* routes require a valid session, except the discovery
+// agent ingest endpoint — it authenticates itself via Bearer token (see
+// routes/discovery.js) so external non-interactive agents can push data
+// without an OIDC session, which is the whole point of that endpoint.
+app.use("/api", (req, res, next) => {
+  if (req.method === "POST" && req.path === "/discovery/ingest") return next();
+  return requireAuth(req, res, next);
+});
 
 app.use("/api/apps",          appsRouter);
 app.use("/api/stacks",        stacksRouter);

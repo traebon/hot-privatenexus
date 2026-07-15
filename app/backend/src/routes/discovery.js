@@ -114,7 +114,21 @@ async function upsertCandidate(pool, candidate) {
         suggested_access_mode, suggested_runtime,
         suggested_health_ep, raw_data, completeness_score)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-     ON CONFLICT DO NOTHING
+     ON CONFLICT (tenant_id, source, raw_name) DO UPDATE SET
+        host                   = EXCLUDED.host,
+        raw_image              = EXCLUDED.raw_image,
+        suggested_slug         = EXCLUDED.suggested_slug,
+        suggested_name         = EXCLUDED.suggested_name,
+        suggested_description  = EXCLUDED.suggested_description,
+        suggested_workspace_id = EXCLUDED.suggested_workspace_id,
+        suggested_category     = EXCLUDED.suggested_category,
+        suggested_access_mode  = EXCLUDED.suggested_access_mode,
+        suggested_runtime      = EXCLUDED.suggested_runtime,
+        suggested_health_ep    = EXCLUDED.suggested_health_ep,
+        raw_data               = EXCLUDED.raw_data,
+        completeness_score     = EXCLUDED.completeness_score,
+        discovered_at          = NOW()
+     WHERE discovery_candidates.status = 'pending'
      RETURNING id`,
     [
       HOT_TENANT_ID,
