@@ -478,6 +478,13 @@ function jsonResp(res, body, status = 200) {
 }
 
 const server = http.createServer(async (req, res) => {
+  // Unauthenticated liveness probe — PrivateNexus's own healthProbe.js does a
+  // plain GET with no Authorization header, so this must stay ahead of the
+  // auth check below or it's unreachable by the app's own health scheduler.
+  if (req.method === "GET" && req.url === "/health") {
+    return jsonResp(res, { ok: true, service: "privatenexus-mcp", version: "3.0.0", tools: TOOLS.length });
+  }
+
   // Auth — T17-3: constant-time comparison to prevent timing oracle on token
   const auth = req.headers.authorization || "";
   const expected = TOKEN ? `Bearer ${TOKEN}` : "";
@@ -490,10 +497,6 @@ const server = http.createServer(async (req, res) => {
   })();
   if (!authOk) {
     return jsonResp(res, { error: "Unauthorized" }, 401);
-  }
-
-  if (req.method === "GET" && req.url === "/health") {
-    return jsonResp(res, { ok: true, service: "privatenexus-mcp", version: "3.0.0", tools: TOOLS.length });
   }
 
   if (req.method !== "POST" || req.url !== "/mcp") {
