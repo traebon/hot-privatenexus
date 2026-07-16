@@ -193,30 +193,34 @@ discoveryRouter.get("/candidates", requireRole("operator"), async (req, res) => 
 // ── POST /api/discovery/scan ─────────────────────────────────────────────────
 // sources: ['local_docker', 'proxmox', 'caddy'] — defaults to local_docker
 discoveryRouter.post("/scan", requireRole("operator"), async (req, res) => {
-  const sources = Array.isArray(req.body.sources)
-    ? req.body.sources
-    : ["local_docker"];
+  try {
+    const sources = Array.isArray(req.body.sources)
+      ? req.body.sources
+      : ["local_docker"];
 
-  const pool    = getPool();
-  const known   = await knownSlugs(pool);
-  const results = { inserted: 0, skipped: 0, errors: [] };
+    const pool    = getPool();
+    const known   = await knownSlugs(pool);
+    const results = { inserted: 0, skipped: 0, errors: [] };
 
-  for (const source of sources) {
-    try {
-      if (source === "local_docker") {
-        await scanLocalDocker(pool, known, results);
-      } else if (source === "proxmox") {
-        await scanProxmox(pool, known, results);
-      } else if (source === "caddy") {
-        await scanCaddy(pool, known, results);
+    for (const source of sources) {
+      try {
+        if (source === "local_docker") {
+          await scanLocalDocker(pool, known, results);
+        } else if (source === "proxmox") {
+          await scanProxmox(pool, known, results);
+        } else if (source === "caddy") {
+          await scanCaddy(pool, known, results);
+        }
+      } catch (err) {
+        results.errors.push({ source, error: err.message });
       }
-    } catch (err) {
-      results.errors.push({ source, error: err.message });
     }
-  }
 
-  recordAudit(req, "discovery.scan", null, "success", { sources, ...results });
-  res.json({ ok: true, ...results });
+    recordAudit(req, "discovery.scan", null, "success", { sources, ...results });
+    res.json({ ok: true, ...results });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // ── Local Docker scanner ─────────────────────────────────────────────────────
@@ -374,60 +378,65 @@ discoveryRouter.post("/ingest", async (req, res) => {
   const rawToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
   if (!rawToken) return res.status(401).json({ ok: false, error: "Unauthorized" });
 
-  const pool = getPool();
-  const hash = hashToken(rawToken);
+  try {
+    const pool = getPool();
+    const hash = hashToken(rawToken);
 
-  // Check agent_tokens table first
-  const { rows: tokenRows } = await pool.query(
-    `SELECT id FROM agent_tokens
-     WHERE tenant_id = $1 AND token_hash = $2 AND revoked = FALSE
-       AND (expires_at IS NULL OR expires_at > NOW())`,
-    [HOT_TENANT_ID, hash]
-  );
+    // Check agent_tokens table first
+    const { rows: tokenRows } = await pool.query(
+      `SELECT id FROM agent_tokens
+       WHERE tenant_id = $1 AND token_hash = $2 AND revoked = FALSE
+         AND (expires_at IS NULL OR expires_at > NOW())`,
+      [HOT_TENANT_ID, hash]
+    );
 
-  if (!tokenRows.length) {
-    // Fallback: static env/secret token (bootstrap only — rotate to DB tokens)
-    const staticToken = readSecret("/run/secrets/discovery_agent_token") ?? process.env.DISCOVERY_AGENT_TOKEN;
-    if (!staticToken || rawToken !== staticToken) {
-      return res.status(401).json({ ok: false, error: "Unauthorized" });
+    if (!tokenRows.length) {
+      // Fallback: static env/secret token (bootstrap only — rotate to DB tokens)
+      const staticToken = readSecret("/run/secrets/discovery_agent_token") ?? process.env.DISCOVERY_AGENT_TOKEN;
+      if (!staticToken || rawToken !== staticToken) {
+        return res.status(401).json({ ok: false, error: "Unauthorized" });
+      }
+    } else {
+      // Update last_used_at
+      await pool.query("UPDATE agent_tokens SET last_used_at = NOW() WHERE id = $1", [tokenRows[0].id]);
     }
-  } else {
-    // Update last_used_at
-    await pool.query("UPDATE agent_tokens SET last_used_at = NOW() WHERE id = $1", [tokenRows[0].id]);
+
+    const { candidates: incoming } = req.body;
+    if (!Array.isArray(incoming) || !incoming.length) {
+      return res.status(400).json({ ok: false, error: "candidates array required" });
+    }
+    const MAX_CANDIDATES_PER_INGEST = 100;
+    if (incoming.length > MAX_CANDIDATES_PER_INGEST) {
+      return res.status(400).json({ ok: false, error: `Batch size exceeds limit of ${MAX_CANDIDATES_PER_INGEST}` });
+    }
+
+    const known   = await knownSlugs(pool);
+
+    // T13-5: pre-fetch valid workspace IDs for this tenant so we can null out foreign IDs from agents
+    const { rows: wsRows } = await pool.query(
+      "SELECT id FROM workspaces WHERE tenant_id = $1",
+      [HOT_TENANT_ID]
+    );
+    const validWsIds = new Set(wsRows.map(r => r.id));
+
+    let inserted  = 0;
+    let skipped   = 0;
+
+    for (const c of incoming) {
+      const slug = toSlug(c.suggested_slug || c.raw_name || "");
+      if (!slug || known.has(slug)) { skipped++; continue; }
+      // Null out workspace_id from external agents if it doesn't belong to this tenant
+      const safeWsId = (c.suggested_workspace_id && validWsIds.has(c.suggested_workspace_id))
+        ? c.suggested_workspace_id : null;
+      const row = await upsertCandidate(pool, { ...c, suggested_slug: slug, suggested_workspace_id: safeWsId });
+      row ? inserted++ : skipped++;
+    }
+
+    res.json({ ok: true, inserted, skipped });
+  } catch (err) {
+    console.error("[discovery] ingest error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
-
-  const { candidates: incoming } = req.body;
-  if (!Array.isArray(incoming) || !incoming.length) {
-    return res.status(400).json({ ok: false, error: "candidates array required" });
-  }
-  const MAX_CANDIDATES_PER_INGEST = 100;
-  if (incoming.length > MAX_CANDIDATES_PER_INGEST) {
-    return res.status(400).json({ ok: false, error: `Batch size exceeds limit of ${MAX_CANDIDATES_PER_INGEST}` });
-  }
-
-  const known   = await knownSlugs(pool);
-
-  // T13-5: pre-fetch valid workspace IDs for this tenant so we can null out foreign IDs from agents
-  const { rows: wsRows } = await pool.query(
-    "SELECT id FROM workspaces WHERE tenant_id = $1",
-    [HOT_TENANT_ID]
-  );
-  const validWsIds = new Set(wsRows.map(r => r.id));
-
-  let inserted  = 0;
-  let skipped   = 0;
-
-  for (const c of incoming) {
-    const slug = toSlug(c.suggested_slug || c.raw_name || "");
-    if (!slug || known.has(slug)) { skipped++; continue; }
-    // Null out workspace_id from external agents if it doesn't belong to this tenant
-    const safeWsId = (c.suggested_workspace_id && validWsIds.has(c.suggested_workspace_id))
-      ? c.suggested_workspace_id : null;
-    const row = await upsertCandidate(pool, { ...c, suggested_slug: slug, suggested_workspace_id: safeWsId });
-    row ? inserted++ : skipped++;
-  }
-
-  res.json({ ok: true, inserted, skipped });
 });
 
 // ── GET /api/discovery/agent-tokens ─────────────────────────────────────────
@@ -471,14 +480,18 @@ discoveryRouter.post("/agent-tokens", requireRole("admin"), async (req, res) => 
 
 // ── DELETE /api/discovery/agent-tokens/:id ───────────────────────────────────
 discoveryRouter.delete("/agent-tokens/:id", requireRole("admin"), async (req, res) => {
-  const { rows } = await getPool().query(
-    `UPDATE agent_tokens SET revoked = TRUE
-     WHERE id = $1 AND tenant_id = $2 RETURNING id, label`,
-    [req.params.id, HOT_TENANT_ID]
-  );
-  if (!rows[0]) return res.status(404).json({ ok: false, error: "Token not found" });
-  recordAudit(req, "discovery.agent_token.revoke", rows[0].label, "success");
-  res.json({ ok: true, revoked: rows[0].label });
+  try {
+    const { rows } = await getPool().query(
+      `UPDATE agent_tokens SET revoked = TRUE
+       WHERE id = $1 AND tenant_id = $2 RETURNING id, label`,
+      [req.params.id, HOT_TENANT_ID]
+    );
+    if (!rows[0]) return res.status(404).json({ ok: false, error: "Token not found" });
+    recordAudit(req, "discovery.agent_token.revoke", rows[0].label, "success");
+    res.json({ ok: true, revoked: rows[0].label });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // ── PATCH /api/discovery/candidates/:id ──────────────────────────────────────
@@ -488,135 +501,144 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
   const { action, reject_reason, updates } = req.body;
   const pool = getPool();
 
-  const { rows } = await pool.query(
-    "SELECT * FROM discovery_candidates WHERE id = $1 AND tenant_id = $2",
-    [id, HOT_TENANT_ID]
-  );
-  if (!rows[0]) return res.status(404).json({ ok: false, error: "Candidate not found" });
-  const candidate = rows[0];
-
-  if (action === "reject") {
-    await pool.query(
-      `UPDATE discovery_candidates
-       SET status = 'rejected', reject_reason = $1, reviewed_at = NOW(), reviewed_by = $2
-       WHERE id = $3`,
-      [reject_reason || null, req.session?.user?.username || "unknown", id]
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM discovery_candidates WHERE id = $1 AND tenant_id = $2",
+      [id, HOT_TENANT_ID]
     );
-    recordAudit(req, "discovery.candidate.reject", candidate.suggested_slug, "success");
-    return res.json({ ok: true, status: "rejected" });
-  }
+    if (!rows[0]) return res.status(404).json({ ok: false, error: "Candidate not found" });
+    const candidate = rows[0];
 
-  if (action === "update") {
-    const allowed = [
-      "suggested_name", "suggested_slug", "suggested_description",
-      "suggested_workspace_id", "suggested_category",
-      "suggested_access_mode", "suggested_runtime", "suggested_health_ep",
-    ];
-    const sets   = [];
-    const params = [id];
-    for (const [k, v] of Object.entries(updates || {})) {
-      if (allowed.includes(k)) {
-        params.push(v);
-        sets.push(`${k} = $${params.length}`);
-      }
-    }
-    if (!sets.length) return res.status(400).json({ ok: false, error: "No valid fields to update" });
-
-    // T13-5: verify workspace_id belongs to this tenant before accepting it
-    if (updates?.suggested_workspace_id !== undefined && updates.suggested_workspace_id !== null) {
-      const { rows: wsCheck } = await pool.query(
-        "SELECT id FROM workspaces WHERE id = $1 AND tenant_id = $2",
-        [updates.suggested_workspace_id, HOT_TENANT_ID]
+    if (action === "reject") {
+      await pool.query(
+        `UPDATE discovery_candidates
+         SET status = 'rejected', reject_reason = $1, reviewed_at = NOW(), reviewed_by = $2
+         WHERE id = $3`,
+        [reject_reason || null, req.session?.user?.username || "unknown", id]
       );
-      if (!wsCheck.length)
-        return res.status(404).json({ ok: false, error: "workspace_id not found for this tenant" });
+      recordAudit(req, "discovery.candidate.reject", candidate.suggested_slug, "success");
+      return res.json({ ok: true, status: "rejected" });
     }
 
-    await pool.query(
-      `UPDATE discovery_candidates SET ${sets.join(", ")} WHERE id = $1`,
-      params
-    );
-    return res.json({ ok: true, status: "updated" });
+    if (action === "update") {
+      const allowed = [
+        "suggested_name", "suggested_slug", "suggested_description",
+        "suggested_workspace_id", "suggested_category",
+        "suggested_access_mode", "suggested_runtime", "suggested_health_ep",
+      ];
+      const sets   = [];
+      const params = [id];
+      for (const [k, v] of Object.entries(updates || {})) {
+        if (allowed.includes(k)) {
+          params.push(v);
+          sets.push(`${k} = $${params.length}`);
+        }
+      }
+      if (!sets.length) return res.status(400).json({ ok: false, error: "No valid fields to update" });
+
+      // T13-5: verify workspace_id belongs to this tenant before accepting it
+      if (updates?.suggested_workspace_id !== undefined && updates.suggested_workspace_id !== null) {
+        const { rows: wsCheck } = await pool.query(
+          "SELECT id FROM workspaces WHERE id = $1 AND tenant_id = $2",
+          [updates.suggested_workspace_id, HOT_TENANT_ID]
+        );
+        if (!wsCheck.length)
+          return res.status(404).json({ ok: false, error: "workspace_id not found for this tenant" });
+      }
+
+      await pool.query(
+        `UPDATE discovery_candidates SET ${sets.join(", ")} WHERE id = $1`,
+        params
+      );
+      return res.json({ ok: true, status: "updated" });
+    }
+
+    if (action === "approve") {
+      // Merge candidate into the service registry
+      const name        = candidate.suggested_name  || candidate.raw_name;
+      const slug        = candidate.suggested_slug;
+      const category    = candidate.suggested_category || "app";
+      const accessMode  = candidate.suggested_access_mode || "internal";
+      const runtime     = candidate.suggested_runtime || "docker";
+      const _rawHealthEp = candidate.suggested_health_ep || null;
+      let healthEp = null;
+      if (_rawHealthEp) {
+        try {
+          const _u = new URL(_rawHealthEp);
+          if (["http:", "https:", "tcp:"].includes(_u.protocol)) healthEp = _rawHealthEp;
+        } catch { /* malformed URL from ingest — silently drop */ }
+      }
+      const description = candidate.suggested_description || null;
+      const wsId        = candidate.suggested_workspace_id || null;
+      // Only docker-sourced candidates carry an actual Docker container name in
+      // raw_name (Proxmox/Caddy sources have hostnames/routes there instead) —
+      // this is what lets /api/actions/run/v2's blast-radius check and the
+      // MCP-triggered autonomous restart (routes/intelligence.js) find the
+      // right container for a registered service.
+      const containerName = runtime === "docker" ? (candidate.raw_name || null) : null;
+
+      if (!slug || !name) {
+        return res.status(400).json({ ok: false, error: "slug and name required before approving" });
+      }
+
+      // Check no slug collision in services
+      const existing = await pool.query(
+        "SELECT id FROM services WHERE tenant_id = $1 AND slug = $2",
+        [HOT_TENANT_ID, slug]
+      );
+      if (existing.rows[0]) {
+        return res.status(409).json({ ok: false, error: `Service with slug '${slug}' already exists` });
+      }
+
+      const { rows: svcRows } = await pool.query(
+        `INSERT INTO services
+           (tenant_id, workspace_id, name, slug, description, category,
+            access_mode, runtime_type, owner, backup_policy, health_endpoint, status, container_name)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'unknown',$12)
+         RETURNING id`,
+        [
+          HOT_TENANT_ID, wsId, name, slug, description,
+          category, accessMode, runtime,
+          req.session?.user?.username || "discovered",
+          "none", healthEp, containerName,
+        ]
+      );
+      const newServiceId = svcRows[0].id;
+
+      await pool.query(
+        `UPDATE discovery_candidates
+         SET status = 'merged', merged_service_id = $1, reviewed_at = NOW(), reviewed_by = $2
+         WHERE id = $3`,
+        [newServiceId, req.session?.user?.username || "unknown", id]
+      );
+
+      recordAudit(req, "discovery.candidate.approve", slug, "success", { newServiceId });
+      recordChange(HOT_TENANT_ID, newServiceId, name, "service_registered",
+        req.session?.user?.username || "unknown",
+        `Service '${name}' promoted from Discovery (slug: ${slug})`);
+      return res.json({ ok: true, status: "merged", serviceId: newServiceId });
+    }
+
+    res.status(400).json({ ok: false, error: "action must be approve | reject | update" });
+  } catch (err) {
+    console.error("[discovery] candidate patch error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
   }
-
-  if (action === "approve") {
-    // Merge candidate into the service registry
-    const name        = candidate.suggested_name  || candidate.raw_name;
-    const slug        = candidate.suggested_slug;
-    const category    = candidate.suggested_category || "app";
-    const accessMode  = candidate.suggested_access_mode || "internal";
-    const runtime     = candidate.suggested_runtime || "docker";
-    const _rawHealthEp = candidate.suggested_health_ep || null;
-    let healthEp = null;
-    if (_rawHealthEp) {
-      try {
-        const _u = new URL(_rawHealthEp);
-        if (["http:", "https:", "tcp:"].includes(_u.protocol)) healthEp = _rawHealthEp;
-      } catch { /* malformed URL from ingest — silently drop */ }
-    }
-    const description = candidate.suggested_description || null;
-    const wsId        = candidate.suggested_workspace_id || null;
-    // Only docker-sourced candidates carry an actual Docker container name in
-    // raw_name (Proxmox/Caddy sources have hostnames/routes there instead) —
-    // this is what lets /api/actions/run/v2's blast-radius check and the
-    // MCP-triggered autonomous restart (routes/intelligence.js) find the
-    // right container for a registered service.
-    const containerName = runtime === "docker" ? (candidate.raw_name || null) : null;
-
-    if (!slug || !name) {
-      return res.status(400).json({ ok: false, error: "slug and name required before approving" });
-    }
-
-    // Check no slug collision in services
-    const existing = await pool.query(
-      "SELECT id FROM services WHERE tenant_id = $1 AND slug = $2",
-      [HOT_TENANT_ID, slug]
-    );
-    if (existing.rows[0]) {
-      return res.status(409).json({ ok: false, error: `Service with slug '${slug}' already exists` });
-    }
-
-    const { rows: svcRows } = await pool.query(
-      `INSERT INTO services
-         (tenant_id, workspace_id, name, slug, description, category,
-          access_mode, runtime_type, owner, backup_policy, health_endpoint, status, container_name)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'unknown',$12)
-       RETURNING id`,
-      [
-        HOT_TENANT_ID, wsId, name, slug, description,
-        category, accessMode, runtime,
-        req.session?.user?.username || "discovered",
-        "none", healthEp, containerName,
-      ]
-    );
-    const newServiceId = svcRows[0].id;
-
-    await pool.query(
-      `UPDATE discovery_candidates
-       SET status = 'merged', merged_service_id = $1, reviewed_at = NOW(), reviewed_by = $2
-       WHERE id = $3`,
-      [newServiceId, req.session?.user?.username || "unknown", id]
-    );
-
-    recordAudit(req, "discovery.candidate.approve", slug, "success", { newServiceId });
-    recordChange(HOT_TENANT_ID, newServiceId, name, "service_registered",
-      req.session?.user?.username || "unknown",
-      `Service '${name}' promoted from Discovery (slug: ${slug})`);
-    return res.json({ ok: true, status: "merged", serviceId: newServiceId });
-  }
-
-  res.status(400).json({ ok: false, error: "action must be approve | reject | update" });
 });
 
 // ── DELETE /api/discovery/candidates/:id ─────────────────────────────────────
 discoveryRouter.delete("/candidates/:id", requireRole("admin"), async (req, res) => {
-  const { rows } = await getPool().query(
-    "DELETE FROM discovery_candidates WHERE id = $1 AND tenant_id = $2 RETURNING id",
-    [req.params.id, HOT_TENANT_ID]
-  );
-  if (!rows[0]) return res.status(404).json({ ok: false, error: "Not found" });
-  recordAudit(req, "discovery.candidate.delete", req.params.id, "success");
-  res.json({ ok: true });
+  try {
+    const { rows } = await getPool().query(
+      "DELETE FROM discovery_candidates WHERE id = $1 AND tenant_id = $2 RETURNING id",
+      [req.params.id, HOT_TENANT_ID]
+    );
+    if (!rows[0]) return res.status(404).json({ ok: false, error: "Not found" });
+    recordAudit(req, "discovery.candidate.delete", req.params.id, "success");
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // ── GET /api/discovery/drift ──────────────────────────────────────────────────
