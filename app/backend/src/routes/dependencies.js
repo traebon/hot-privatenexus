@@ -95,56 +95,7 @@ dependenciesRouter.get("/restore-chain/:id", requireRole("viewer"), async (req, 
     );
     if (!svc[0]) return res.status(404).json({ ok: false, error: "Service not found" });
 
-    // BFS upstream: what does this service depend on?
-    const visited = new Set([id]);
-    const queue   = [id];
-    const nodes   = new Map(); // id → { id, name, slug, status, dep_type }
-    const inEdges = new Map(); // id → Set of upstream ids it depends on
-
-    nodes.set(id, { ...svc[0], dep_type: null });
-    inEdges.set(id, new Set());
-
-    while (queue.length) {
-      const current = queue.shift();
-      const { rows: deps } = await pool.query(
-        `SELECT sd.upstream_id AS id, sd.dep_type,
-                s.name, s.slug, s.status, s.category, s.backup_policy
-         FROM service_dependencies sd
-         JOIN services s ON s.id = sd.upstream_id
-         WHERE sd.downstream_id = $1 AND sd.tenant_id = $2`,
-        [current, HOT_TENANT_ID]
-      );
-      for (const dep of deps) {
-        if (!nodes.has(dep.id)) {
-          nodes.set(dep.id, dep);
-          inEdges.set(dep.id, new Set());
-          queue.push(dep.id);
-        }
-        inEdges.get(current)?.add(dep.id);
-      }
-    }
-
-    // Kahn's topological sort (upstream first)
-    const outDegree = new Map([...nodes.keys()].map(k => [k, 0]));
-    for (const [, upstreams] of inEdges) {
-      for (const u of upstreams) outDegree.set(u, (outDegree.get(u) || 0) + 1);
-    }
-
-    const ready  = [...nodes.keys()].filter(k => outDegree.get(k) === 0);
-    const sorted = [];
-    while (ready.length) {
-      const n = ready.shift();
-      if (n !== id) sorted.push(nodes.get(n)); // exclude the target service itself
-      for (const [k, ups] of inEdges) {
-        if (ups.has(n)) {
-          ups.delete(n);
-          if (ups.size === 0 && k !== id) outDegree.set(n, (outDegree.get(n) || 1) - 1);
-          if (inEdges.get(k).size === 0) ready.push(k);
-        }
-      }
-    }
-
-    // Simpler: just return BFS order (upstream levels first)
+    // BFS upstream (upstream levels first) -- what does this service depend on?
     const chain = [];
     const seen  = new Set([id]);
     const bfsQ  = [{ id, depth: 0 }];
