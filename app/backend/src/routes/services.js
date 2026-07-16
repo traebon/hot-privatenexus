@@ -404,16 +404,21 @@ servicesRouter.patch("/workspaces/:id", requireRole("admin"), async (req, res) =
 
 // DELETE /api/services/workspaces/:id — delete a workspace (admin+)
 servicesRouter.delete("/workspaces/:id", requireRole("admin"), async (req, res) => {
-  // Reassign any services in this workspace to null first
-  const { rowCount: reassigned } = await getPool().query(
-    "UPDATE services SET workspace_id=NULL WHERE workspace_id=$1 AND tenant_id=$2",
-    [req.params.id, HOT_TENANT_ID]
-  );
-  const { rows } = await getPool().query(
-    "DELETE FROM workspaces WHERE id=$1 AND tenant_id=$2 RETURNING slug",
-    [req.params.id, HOT_TENANT_ID]
-  );
-  if (!rows.length) return res.status(404).json({ ok: false, error: "Not found" });
-  recordAudit(req, "workspace.delete", rows[0].slug, "success", { servicesReassigned: reassigned });
-  res.json({ ok: true });
+  try {
+    // Reassign any services in this workspace to null first
+    const { rowCount: reassigned } = await getPool().query(
+      "UPDATE services SET workspace_id=NULL WHERE workspace_id=$1 AND tenant_id=$2",
+      [req.params.id, HOT_TENANT_ID]
+    );
+    const { rows } = await getPool().query(
+      "DELETE FROM workspaces WHERE id=$1 AND tenant_id=$2 RETURNING slug",
+      [req.params.id, HOT_TENANT_ID]
+    );
+    if (!rows.length) return res.status(404).json({ ok: false, error: "Not found" });
+    recordAudit(req, "workspace.delete", rows[0].slug, "success", { servicesReassigned: reassigned });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[services] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
 });
