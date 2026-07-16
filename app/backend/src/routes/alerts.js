@@ -17,7 +17,7 @@ async function buildAlerts() {
   const [ruleAlerts, probeResults, nodeResults] = await Promise.all([
     promInstant('ALERTS{alertstate="firing"}'),
     promInstant('probe_success{job="blackbox-https"}'),
-    promInstant('up{job=~".*-node"}'),
+    promInstant('up{job=~".*node.*"}'),
   ]);
 
   const alerts = [];
