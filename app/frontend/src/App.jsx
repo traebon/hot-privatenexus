@@ -2257,7 +2257,8 @@ function PrivateNexusDashboard({ authUser }) {
         <div className="flex items-center justify-between">
           <div>
             <div className="text-xs uppercase tracking-wider text-cyan-300/80">Command Center</div>
-            <div className="text-lg font-semibold">System Overview</div>
+            <div className="text-lg font-semibold">Backend Container</div>
+            <div className="text-[10px] text-neutral-500">This container&apos;s own resource usage — see Fleet below for host/VM-wide metrics</div>
           </div>
           <div className="flex items-center gap-2">
             {metricsData.collectedAt
