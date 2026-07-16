@@ -1915,6 +1915,18 @@ function PrivateNexusDashboard({ authUser }) {
     { name: "System",         boards: ["Admin", "Emergency"] },
   ];
 
+  // Idle-state accent per group header, each echoing the color already
+  // established for that group's most representative board in boardThemes
+  // below (Alerts/Inventory/DNS/Governance/Admin) so the collapsed sidebar
+  // still reads as color-coded, not flat gray.
+  const groupThemes = {
+    Monitor:        { text: "text-rose-300",    ring: "border-rose-400/20",    hoverRing: "hover:border-rose-400/40",    hoverBg: "hover:bg-rose-500/10" },
+    Services:       { text: "text-teal-300",    ring: "border-teal-400/20",    hoverRing: "hover:border-teal-400/40",    hoverBg: "hover:bg-teal-500/10" },
+    Infrastructure: { text: "text-emerald-300", ring: "border-emerald-400/20", hoverRing: "hover:border-emerald-400/40", hoverBg: "hover:bg-emerald-500/10" },
+    Governance:     { text: "text-amber-300",   ring: "border-amber-400/20",   hoverRing: "hover:border-amber-400/40",   hoverBg: "hover:bg-amber-500/10" },
+    System:         { text: "text-purple-300",  ring: "border-purple-400/20",  hoverRing: "hover:border-purple-400/40",  hoverBg: "hover:bg-purple-500/10" },
+  };
+
   const boardThemes = {
     Home:      { active: "from-cyan-400 to-blue-500",     ring: "border-cyan-400/30",     hover: "hover:border-cyan-400/30",     shell: "from-cyan-500/10 to-blue-500/5" },
     Ops:       { active: "from-emerald-400 to-green-500", ring: "border-emerald-400/30",  hover: "hover:border-emerald-400/30",  shell: "from-emerald-500/10 to-green-500/5" },
@@ -5962,6 +5974,7 @@ function PrivateNexusDashboard({ authUser }) {
               const isOpen = openGroups.has(group.name);
               const groupHasActive = group.boards.includes(activeBoard);
               const groupAlertCount = group.boards.includes("Alerts") ? liveAlerts.length : 0;
+              const gt = groupThemes[group.name];
               return (
                 <div key={group.name}>
                   <button
@@ -5974,10 +5987,10 @@ function PrivateNexusDashboard({ authUser }) {
                       })
                     }
                     className={[
-                      "flex w-full items-center justify-between rounded-lg px-4 py-2 text-sm transition",
+                      "flex w-full items-center justify-between rounded-lg border px-4 py-2 text-sm transition",
                       groupHasActive && !isOpen
-                        ? `bg-gradient-to-r text-black shadow ${boardThemes[activeBoard].active}`
-                        : "bg-neutral-800/60 text-neutral-300 hover:bg-neutral-700",
+                        ? `border-transparent bg-gradient-to-r text-black shadow ${boardThemes[activeBoard].active}`
+                        : `bg-neutral-800/60 ${gt.text} ${gt.ring} ${gt.hoverRing} ${gt.hoverBg}`,
                     ].join(" ")}
                   >
                     <span>{group.name}</span>
