@@ -3,6 +3,8 @@ import { getDocker } from "../dockerClient.js";
 import os from "os";
 import { execSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, rmSync } from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { recordAudit } from "../auditLog.js";
 import { requireRole, userRole } from "../middleware/requireRole.js";
 import { getPool, HOT_TENANT_ID } from "../db.js";
@@ -12,7 +14,13 @@ export const actionsRouter = Router();
 
 const docker = getDocker();
 
-const MAINTENANCE_FILE = "/tmp/pn-maintenance.json";
+// Was "/tmp/pn-maintenance.json" -- ephemeral, wiped on every redeploy. Now
+// under app/backend/data/, which the Dockerfile creates and chowns to the
+// runtime user at build time (see the Files board fix, same day) -- no
+// runtime mkdirSync needed here, the directory is guaranteed to already
+// exist and be writable by the time this module loads.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const MAINTENANCE_FILE = path.join(__dirname, "../../data/maintenance.json");
 
 // Auto-expiry timer for maintenance mode
 let maintenanceTimer = null;
