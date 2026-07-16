@@ -102,13 +102,20 @@ function tcpProbe(host, port, timeoutMs = 8000) {
 async function probeService(svc) {
   const start = Date.now();
   if (!svc.health_endpoint) return { ok: false, error: "No health endpoint" };
-  try {
-    let status, status_code = null, error = null, latency_ms;
-    if (svc.health_endpoint.startsWith("tcp://")) {
-      const u = new URL(svc.health_endpoint);
-      const r = await tcpProbe(u.hostname, Number(u.port));
-      status = r.status; error = r.error; latency_ms = r.latency_ms;
-    } else {
+
+  let status, status_code = null, error = null, latency_ms;
+  if (svc.health_endpoint.startsWith("tcp://")) {
+    const u = new URL(svc.health_endpoint);
+    const r = await tcpProbe(u.hostname, Number(u.port));
+    status = r.status; error = r.error; latency_ms = r.latency_ms;
+  } else {
+    // Catch fetch failures (connection refused, DNS, timeout) here specifically
+    // and record them as a real "down" event, mirroring healthProbe.js's
+    // scheduler. Previously this was only caught by the outer try/catch below,
+    // which skipped the DB write entirely on any network failure — the exact
+    // failure mode this whole signal-detection system exists to catch would
+    // silently produce no health_events row and no status update at all.
+    try {
       const r = await fetch(svc.health_endpoint, {
         method: "GET",
         signal: AbortSignal.timeout(8000),
@@ -117,7 +124,14 @@ async function probeService(svc) {
       latency_ms  = Date.now() - start;
       status_code = r.status;
       status = r.status < 300 ? "healthy" : r.status < 500 ? "warning" : "degraded";
+    } catch (err) {
+      status = "down";
+      latency_ms = Date.now() - start;
+      error = err.name === "TimeoutError" ? "timeout" : err.message;
     }
+  }
+
+  try {
     const pool = getPool();
     await Promise.all([
       pool.query("UPDATE services SET status=$1, updated_at=NOW() WHERE id=$2 AND tenant_id=$3",
