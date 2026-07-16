@@ -87,7 +87,7 @@ catalogueRouter.get("/", requireRole("viewer"), (req, res) => {
     apps = apps.filter((a) =>
       a.name.toLowerCase().includes(lq) ||
       a.description.toLowerCase().includes(lq) ||
-      a.tags.some((t) => t.includes(lq))
+      a.tags.some((t) => t.toLowerCase().includes(lq))
     );
   }
   res.json({ ok: true, apps, categories: CATEGORIES, total: APPS.length });

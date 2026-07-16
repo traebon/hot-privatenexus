@@ -6514,7 +6514,7 @@ function PrivateNexusDashboard({ authUser }) {
                 const lq = catalogueSearch.toLowerCase();
                 const filtered = catalogueApps.filter((a) =>
                   (catalogueCategory === "all" || a.category === catalogueCategory) &&
-                  (!lq || a.name.toLowerCase().includes(lq) || a.description.toLowerCase().includes(lq) || a.tags.some((t) => t.includes(lq)))
+                  (!lq || a.name.toLowerCase().includes(lq) || a.description.toLowerCase().includes(lq) || a.tags.some((t) => t.toLowerCase().includes(lq)))
                 );
                 if (!filtered.length) return (
                   <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-8 text-center text-xs text-neutral-600">No apps match your filter</div>
@@ -6564,7 +6564,9 @@ function PrivateNexusDashboard({ authUser }) {
                                       setServiceForm({
                                         name: app.name, slug: app.id,
                                         description: app.description,
-                                        category: ["media","productivity","finance","business","home"].includes(app.category) ? (app.category === "home" ? "personal" : app.category) : "infra",
+                                        category: app.category === "business" ? "business"
+                                          : ["media","productivity","finance","home"].includes(app.category) ? "personal"
+                                          : "infra",
                                         access_url: "", access_mode: app.access_mode,
                                         runtime_type: "docker", owner: "tristian",
                                         backup_policy: app.backup, health_endpoint: "",
