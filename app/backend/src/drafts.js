@@ -1,7 +1,13 @@
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 
-const DRAFTS_DIR = "/root/privatenexus/app/backend/data/drafts";
+// Was a hardcoded Gateway-local dev path ("/root/privatenexus/...") that
+// never existed inside any deployed container -- every draft read/write
+// failed with EACCES/ENOENT. Matches the portable __dirname-relative
+// pattern the other data/-writing modules already use correctly.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DRAFTS_DIR = path.join(__dirname, "../data/drafts");
 
 // Draft IDs come from the file registry (slugs set by admins).
 // Validate here so that a malicious registry ID cannot traverse out of DRAFTS_DIR.

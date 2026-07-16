@@ -1,7 +1,14 @@
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 
-const BACKUPS_DIR = "/root/privatenexus/app/backend/data/backups";
+// Was a hardcoded Gateway-local dev path -- same bug as drafts.js. Now
+// matches backupRetention.js's own BACKUPS_DIR resolution exactly, closing
+// a second, quieter inconsistency (that module computed the "correct"
+// portable path independently but could never actually reach the files
+// fileBackups.js wrote, since the two never agreed on a location).
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const BACKUPS_DIR = path.join(__dirname, "../data/backups");
 
 function ensureBackupsDir() {
   fs.mkdirSync(BACKUPS_DIR, { recursive: true });
