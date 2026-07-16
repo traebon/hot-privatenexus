@@ -93,7 +93,7 @@ function computeConfidence(svc, backups = [], restoreTests = [], depCount = 0) {
   if (!hasBackup)                blockers.push("No backup records — restore source unknown");
   if (hasBackup && trustPts === 0) blockers.push("No trusted or LKG backup — integrity unverified");
   if (testPts === 0)             blockers.push("Restore never validated — recovery path unproven");
-  if (!hasRunbook && ["admin","infra","ops","business"].includes(svc.category))
+  if (!hasRunbook && ["admin","infra","ops","business","app","monitoring"].includes(svc.category))
     blockers.push("No recovery runbook — operator must improvise during an incident");
   if (depPts === 0)              blockers.push("Dependencies unmapped — restore order unknown");
 
