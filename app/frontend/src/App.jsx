@@ -3148,11 +3148,13 @@ function PrivateNexusDashboard({ authUser }) {
     mtls:     "bg-purple-500/10 text-purple-400",
   };
   const CATEGORY_LABELS = {
-    business: "Business",
-    personal: "Personal",
-    ops:      "Ops",
-    admin:    "Admin",
-    infra:    "Infra",
+    business:   "Business",
+    personal:   "Personal",
+    ops:        "Ops",
+    admin:      "Admin",
+    infra:      "Infra",
+    app:        "App",
+    monitoring: "Monitoring",
   };
 
   const BLANK_SERVICE_FORM = {
@@ -4210,6 +4212,8 @@ function PrivateNexusDashboard({ authUser }) {
                   <option value="admin">Admin</option>
                   <option value="business">Business</option>
                   <option value="personal">Personal</option>
+                  <option value="app">App</option>
+                  <option value="monitoring">Monitoring</option>
                 </select>
               </div>
               <div>
@@ -5714,6 +5718,8 @@ function PrivateNexusDashboard({ authUser }) {
           <option value="admin">Admin</option>
           <option value="business">Business</option>
           <option value="personal">Personal</option>
+          <option value="app">App</option>
+          <option value="monitoring">Monitoring</option>
         </select>
         <select value={serviceStatusFilter} onChange={(e) => setServiceStatusFilter(e.target.value)}
           className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-300 focus:border-teal-400/50 focus:outline-none">

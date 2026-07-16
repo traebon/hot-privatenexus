@@ -7,7 +7,7 @@ import { recordChange } from "./governance.js";
 
 export const servicesRouter = Router();
 
-const VALID_CATEGORIES   = ["business", "personal", "ops", "admin", "infra"];
+const VALID_CATEGORIES   = ["business", "personal", "ops", "admin", "infra", "app", "monitoring"];
 const VALID_ACCESS_MODES = ["public", "sso", "vpn_only", "internal", "mtls"];
 const VALID_RUNTIME_TYPES = ["docker", "podman", "vm", "lxc", "external", "api"];
 const VALID_STATUSES     = ["healthy", "warning", "degraded", "down", "unknown"];

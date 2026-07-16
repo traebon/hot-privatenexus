@@ -56,31 +56,40 @@ function toSlug(name = "") {
 }
 
 // ── Infer category from image name ──────────────────────────────────────────
+// Output must stay within services.js's VALID_CATEGORIES. "monitoring" and
+// "app" are first-class categories with real live members; database/proxy/
+// security/vcs images fold into "infra" since nothing distinguishes them
+// as their own category yet.
 function inferCategory(image = "") {
   const img = image.toLowerCase();
-  if (/postgres|mariadb|mysql|redis|mongo/.test(img)) return "database";
-  if (/nginx|caddy|traefik|apache/.test(img))          return "proxy";
+  if (/postgres|mariadb|mysql|redis|mongo/.test(img)) return "infra";
+  if (/nginx|caddy|traefik|apache/.test(img))          return "infra";
   if (/grafana|prometheus|loki|uptime/.test(img))      return "monitoring";
-  if (/keycloak|vault|authelia/.test(img))              return "security";
-  if (/forgejo|gitea|gitlab/.test(img))                 return "vcs";
+  if (/keycloak|vault|authelia/.test(img))              return "infra";
+  if (/forgejo|gitea|gitlab/.test(img))                 return "infra";
   if (/nextcloud|immich|vaultwarden/.test(img))         return "personal";
   if (/erpnext|frappe/.test(img))                       return "business";
   return "app";
 }
 
 // ── Infer health endpoint from container port bindings ──────────────────────
+// Always address the container by its Docker network name, on its PrivatePort
+// (the port it actually listens on) — never "localhost" or PublicPort, which
+// only resolve correctly for host-published ports and are wrong or unreachable
+// for the (now-common) internal-network-only deployment pattern. Prefer a
+// recognized HTTP port for a real HTTP health check; fall back to a plain TCP
+// connect on the first port the container exposes at all.
 function inferHealthEndpoint(ports = [], labels = {}, containerName = "") {
   if (labels["pn.health_endpoint"]) return labels["pn.health_endpoint"];
+  if (!containerName) return null;
   const httpPorts = [443, 8443, 80, 8080, 8000, 3000, 3001, 9090, 9191];
-  for (const p of httpPorts) {
-    const binding = ports.find((pb) => pb.PrivatePort === p || pb.PublicPort === p);
-    if (binding) {
-      const scheme = p === 443 || p === 8443 ? "https" : "http";
-      const host   = "localhost";
-      const port   = binding.PublicPort || binding.PrivatePort;
-      return `${scheme}://${host}:${port}/`;
-    }
+  const httpMatch = ports.find((p) => httpPorts.includes(p.PrivatePort));
+  if (httpMatch) {
+    const scheme = [443, 8443].includes(httpMatch.PrivatePort) ? "https" : "http";
+    return `${scheme}://${containerName}:${httpMatch.PrivatePort}/`;
   }
+  const anyPort = ports.find((p) => p.PrivatePort);
+  if (anyPort) return `tcp://${containerName}:${anyPort.PrivatePort}`;
   return null;
 }
 
@@ -577,7 +586,7 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
         HOT_TENANT_ID, wsId, name, slug, description,
         category, accessMode, runtime,
         req.session?.user?.username || "discovered",
-        "unknown", healthEp, containerName,
+        "none", healthEp, containerName,
       ]
     );
     const newServiceId = svcRows[0].id;
