@@ -252,6 +252,65 @@ function PrivateNexusDashboard({ authUser }) {
           </div>
         </div>
       )}
+      {/* Recovery playbook — triggered contextually from Intelligence signals/proposals */}
+      {incidentPlan && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-sky-400/30 bg-neutral-950 shadow-2xl">
+            <div className="sticky top-0 flex items-center justify-between border-b border-neutral-800 bg-neutral-950 px-6 py-4">
+              <div className="text-base font-semibold text-sky-300">
+                {incidentPlan.ok ? incidentPlan.playbook.title : "Recovery Plan"}
+              </div>
+              <button onClick={() => setIncidentPlan(null)} className="text-neutral-500 hover:text-white text-lg">✕</button>
+            </div>
+            {!incidentPlan.ok && (
+              <div className="px-6 py-4 text-sm text-rose-300">{incidentPlan.error}</div>
+            )}
+            {incidentPlan.ok && (
+              <div className="space-y-3 px-6 py-4 text-sm">
+                <div className="text-xs text-neutral-400">{incidentPlan.playbook.incident_summary}</div>
+                <div className="flex gap-3 text-xs">
+                  <span className="rounded-lg border border-sky-400/20 bg-sky-500/10 px-2 py-1 text-sky-300">
+                    Est. RTO: {incidentPlan.playbook.summary.estimated_rto_min ?? "—"} min
+                  </span>
+                  <span className="rounded-lg border border-neutral-700 bg-neutral-800/60 px-2 py-1 text-neutral-400">
+                    {incidentPlan.playbook.summary.dependencies_in_scope} dependenc{incidentPlan.playbook.summary.dependencies_in_scope === 1 ? "y" : "ies"} in scope
+                  </span>
+                </div>
+                {incidentPlan.playbook.summary.blockers?.length > 0 && (
+                  <div className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+                    {incidentPlan.playbook.summary.blockers.map((b, i) => <div key={i}>⚠ {b}</div>)}
+                  </div>
+                )}
+                <div className="space-y-2">
+                  {incidentPlan.playbook.sections.map(step => (
+                    <div key={step.step} className={`rounded-lg border p-3 ${step.is_target ? "border-sky-400/30 bg-sky-500/5" : "border-neutral-700/50 bg-neutral-800/40"}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="rounded bg-neutral-800/80 px-1.5 py-0.5 text-xs text-neutral-400">Step {step.step}</span>
+                          <span className="text-sm font-medium">{step.service_name}</span>
+                          {step.is_target && <span className="rounded bg-sky-500/20 px-1.5 py-0.5 text-xs text-sky-300">Target</span>}
+                        </div>
+                        {step.rto_min != null && <span className="text-xs text-neutral-500">~{step.rto_min}min</span>}
+                      </div>
+                      {step.backup_source && (
+                        <div className="mt-1 text-xs text-neutral-500">Backup: {step.backup_source}</div>
+                      )}
+                      <ul className="mt-2 space-y-0.5 text-xs text-neutral-400">
+                        {step.instructions.map((instr, i) => <li key={i}>• {instr}</li>)}
+                      </ul>
+                      {step.runbook_url && (
+                        <a href={step.runbook_url} target="_blank" rel="noreferrer" className="mt-1 inline-block text-xs text-sky-400 hover:underline">
+                          Open runbook →
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <div className="space-y-4">
         {/* Header */}
         <div className="rounded-2xl border border-amber-400/20 bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-yellow-500/10 p-4">
@@ -697,6 +756,8 @@ function PrivateNexusDashboard({ authUser }) {
   const [intelApproving, setIntelApproving]           = useState(null); // proposal id
   const [intelDismissing, setIntelDismissing]         = useState(null); // proposal id
   const [intelTogglingPolicy, setIntelTogglingPolicy] = useState(null); // policy id
+  const [incidentRunning, setIncidentRunning]         = useState(null); // service id
+  const [incidentPlan, setIncidentPlan]               = useState(null); // { ok, incident, restore_plan } | { ok:false, error }
 
   // Discovery board
   const [discCandidates, setDiscCandidates]   = useState([]);
@@ -7431,6 +7492,24 @@ function PrivateNexusDashboard({ authUser }) {
               finally { setIntelDismissing(null); }
             };
 
+            const runIncidentResponse = async (serviceId, description) => {
+              setIncidentRunning(serviceId);
+              setIncidentPlan(null);
+              try {
+                const r = await fetch(`${API_BASE}/api/recovery/playbook`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ service_id: serviceId, incident_summary: description }),
+                });
+                const d = await r.json();
+                setIncidentPlan(d.ok ? d : { ok: false, error: d.error || "Request failed" });
+              } catch {
+                setIncidentPlan({ ok: false, error: "Request failed" });
+              } finally {
+                setIncidentRunning(null);
+              }
+            };
+
             const togglePolicy = async (policy) => {
               setIntelTogglingPolicy(policy.id);
               try {
@@ -7528,19 +7607,28 @@ function PrivateNexusDashboard({ authUser }) {
                             <div className="mt-0.5 text-xs opacity-80">{sig.detail}</div>
                             <div className="mt-1 text-xs opacity-60">{new Date(sig.fired_at).toLocaleString()}</div>
                           </div>
-                          {!sig.acknowledged && !sig.resolved_at && (
+                          <div className="flex shrink-0 flex-col gap-1">
+                            {!sig.acknowledged && !sig.resolved_at && (
+                              <button
+                                onClick={() => {
+                                  fetch(`${API_BASE}/api/intelligence/signals/${sig.id}/ack`, { method: "POST" })
+                                    .then(r => r.json())
+                                    .then(d => { if (d.ok) setIntelSignals(prev => prev ? { ...prev, signals: prev.signals.map(s => s.id === sig.id ? { ...s, acknowledged: true } : s) } : null); })
+                                    .catch(() => {});
+                                }}
+                                className="rounded-lg border border-current/20 bg-black/20 px-2 py-1 text-xs hover:bg-black/40"
+                              >
+                                Ack
+                              </button>
+                            )}
                             <button
-                              onClick={() => {
-                                fetch(`${API_BASE}/api/intelligence/signals/${sig.id}/ack`, { method: "POST" })
-                                  .then(r => r.json())
-                                  .then(d => { if (d.ok) setIntelSignals(prev => prev ? { ...prev, signals: prev.signals.map(s => s.id === sig.id ? { ...s, acknowledged: true } : s) } : null); })
-                                  .catch(() => {});
-                              }}
-                              className="shrink-0 rounded-lg border border-current/20 bg-black/20 px-2 py-1 text-xs hover:bg-black/40"
+                              onClick={() => runIncidentResponse(sig.service_id, sig.detail)}
+                              disabled={incidentRunning === sig.service_id}
+                              className="rounded-lg border border-current/20 bg-black/20 px-2 py-1 text-xs hover:bg-black/40 disabled:opacity-50"
                             >
-                              Ack
+                              {incidentRunning === sig.service_id ? "…" : "Recovery Plan"}
                             </button>
-                          )}
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -7594,24 +7682,33 @@ function PrivateNexusDashboard({ authUser }) {
                             )}
                             <div className="mt-1 text-xs text-neutral-600">{new Date(prop.proposed_at).toLocaleString()}</div>
                           </div>
-                          {prop.status === "pending" && (
-                            <div className="flex shrink-0 flex-col gap-1">
-                              <button
-                                onClick={() => approveProposal(prop.id)}
-                                disabled={!!intelApproving || !!intelDismissing}
-                                className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
-                              >
-                                {intelApproving === prop.id ? "Executing…" : "Approve"}
-                              </button>
-                              <button
-                                onClick={() => dismissProposal(prop.id)}
-                                disabled={!!intelApproving || !!intelDismissing}
-                                className="rounded-lg border border-neutral-600/30 bg-neutral-700/30 px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-700/50 disabled:opacity-50"
-                              >
-                                {intelDismissing === prop.id ? "…" : "Dismiss"}
-                              </button>
-                            </div>
-                          )}
+                          <div className="flex shrink-0 flex-col gap-1">
+                            {prop.status === "pending" && (
+                              <>
+                                <button
+                                  onClick={() => approveProposal(prop.id)}
+                                  disabled={!!intelApproving || !!intelDismissing}
+                                  className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
+                                >
+                                  {intelApproving === prop.id ? "Executing…" : "Approve"}
+                                </button>
+                                <button
+                                  onClick={() => dismissProposal(prop.id)}
+                                  disabled={!!intelApproving || !!intelDismissing}
+                                  className="rounded-lg border border-neutral-600/30 bg-neutral-700/30 px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-700/50 disabled:opacity-50"
+                                >
+                                  {intelDismissing === prop.id ? "…" : "Dismiss"}
+                                </button>
+                              </>
+                            )}
+                            <button
+                              onClick={() => runIncidentResponse(prop.service_id, prop.rationale)}
+                              disabled={incidentRunning === prop.service_id}
+                              className="rounded-lg border border-sky-400/20 bg-sky-500/10 px-2 py-1 text-xs text-sky-300 hover:bg-sky-500/20 disabled:opacity-50"
+                            >
+                              {incidentRunning === prop.service_id ? "…" : "Recovery Plan"}
+                            </button>
+                          </div>
                         </div>
                       </div>
                     ))}
