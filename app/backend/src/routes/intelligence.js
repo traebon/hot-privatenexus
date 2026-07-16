@@ -270,12 +270,22 @@ export async function runIntelligenceScan() {
       );
       if (existingProp.length) continue;
 
-      const requiresApproval = actionType === "container.restart";
       const rationale = `Signal '${sig.type}': ${sig.detail}`;
       const autoPolicy = autoMap.get(`${sig.type}:${actionType}`);
 
-      // If autonomous policy is enabled and action doesn't require approval → auto-execute
-      if (autoPolicy && !requiresApproval) {
+      // container.restart only bypasses approval when an enabled autonomous
+      // policy explicitly covers it, AND only for critical-severity signals —
+      // matching the down_spike:container.restart policy's own documented
+      // intent ("5+ consecutive failures"). detectSignals() fires down_spike
+      // starting at 3 consecutive failures (severity stays "warning" until 5+),
+      // so without the severity check, enabling the toggle would auto-restart
+      // far earlier than the policy describes. health.refresh is unaffected —
+      // it's always safe to auto-run regardless of severity.
+      const canAutoExecute = !!autoPolicy &&
+        (actionType !== "container.restart" || sig.severity === "critical");
+      const requiresApproval = actionType === "container.restart" && !canAutoExecute;
+
+      if (canAutoExecute) {
         const execKey = `${svc.id}:${actionType}`;
         if ((autoExecuted[execKey] || 0) >= autoPolicy.max_per_hour) continue;
         autoExecuted[execKey] = (autoExecuted[execKey] || 0) + 1;
