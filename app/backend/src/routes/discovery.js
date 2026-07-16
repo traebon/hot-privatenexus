@@ -620,7 +620,14 @@ discoveryRouter.delete("/candidates/:id", requireRole("admin"), async (req, res)
 });
 
 // ── GET /api/discovery/drift ──────────────────────────────────────────────────
-// Compare registered docker services against last local_docker scan
+// Compare registered docker services against the last live Docker inventory —
+// either the manual in-process scan (source='local_docker') or the automated
+// hourly discovery-agent.timer push via /ingest (source='docker', see
+// scripts/discovery-agent.sh). Both are genuine snapshots of what's actually
+// running; only checking 'local_docker' left this permanently blind to the
+// one pathway that's actually automated -- confirmed live, every real
+// candidate in the table is source='docker' or 'system_info', zero are
+// 'local_docker' (nobody had ever clicked the manual "Scan Docker" button).
 discoveryRouter.get("/drift", requireRole("operator"), async (_req, res) => {
   try {
     const pool = getPool();
@@ -632,10 +639,10 @@ discoveryRouter.get("/drift", requireRole("operator"), async (_req, res) => {
       [HOT_TENANT_ID]
     );
 
-    // Latest local_docker discovery batch slugs
+    // Latest live-docker discovery batch slugs (either collection pathway)
     const { rows: discovered } = await pool.query(
       `SELECT suggested_slug FROM discovery_candidates
-       WHERE tenant_id = $1 AND source = 'local_docker'
+       WHERE tenant_id = $1 AND source IN ('local_docker', 'docker')
          AND discovered_at > NOW() - INTERVAL '25 hours'`,
       [HOT_TENANT_ID]
     );
