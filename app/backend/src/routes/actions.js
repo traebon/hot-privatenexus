@@ -198,6 +198,27 @@ actionsRouter.post("/emergency", requireRole("admin"), async (req, res) => {
     }
   }
 
+  // maintenance.enable has a seeded cooldown_secs=300 policy row that was
+  // never consulted anywhere -- same unenforced-policy bug as stop-all had,
+  // just lower stakes (maintenance mode is currently a pure display flag,
+  // nothing else in the app gates on it, confirmed by grep). elevation_required
+  // is already satisfied by this route's own requireRole("admin") gate, so
+  // only the cooldown is meaningfully new here. Only gates enable, not
+  // disable -- no reason to rate-limit turning it back off.
+  if (action === "maintenance.enable") {
+    const policy = await getPolicy("maintenance.enable");
+    if (policy?.cooldown_secs) {
+      const cooldownKey = "emergency:maintenance.enable";
+      const cooldownMs  = policy.cooldown_secs * 1000;
+      const lastTs      = actionCooldowns.get(cooldownKey) || 0;
+      const elapsed     = Date.now() - lastTs;
+      if (elapsed < cooldownMs) {
+        return res.status(429).json({ ok: false, error: `Cooldown active — wait ${Math.ceil((cooldownMs - elapsed) / 1000)}s before retrying` });
+      }
+      actionCooldowns.set(cooldownKey, Date.now());
+    }
+  }
+
   try {
     if (action === "stacks.stop-all") {
       const list = await docker.listContainers({ all: false });
