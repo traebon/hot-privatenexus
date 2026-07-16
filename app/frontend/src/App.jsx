@@ -565,6 +565,7 @@ function PrivateNexusDashboard({ authUser }) {
   // State
   // -------------------------------------------------------------------------
   const [activeBoard, setActiveBoard] = useState("Home");
+  const [openGroups, setOpenGroups] = useState(() => new Set());
   const [confirmAction, setConfirmAction] = useState(null);
   const [logs, setLogs] = useState([]);
   const [adminView, setAdminView] = useState(null);
@@ -1903,7 +1904,16 @@ function PrivateNexusDashboard({ authUser }) {
         level: a.level === "critical" ? "critical" : a.level === "warning" ? "warning" : "info",
       }));
 
-  const boards = ["Home", "Ops", "Admin", "Stacks", "Files", "DNS", "Catalogue", "Inventory", "Alerts", "Logs", "Activity", "Discovery", "Dependencies", "Governance", "Recovery", "Intelligence", "Emergency"];
+  // Sidebar groups — "Home" is pinned standalone above these; every other
+  // board lives in exactly one group so the sidebar can collapse to 6 rows
+  // instead of listing all 17 boards flat.
+  const boardGroups = [
+    { name: "Monitor",        boards: ["Ops", "Alerts", "Logs", "Activity"] },
+    { name: "Services",       boards: ["Inventory", "Stacks", "Catalogue", "Discovery", "Dependencies"] },
+    { name: "Infrastructure", boards: ["DNS", "Files"] },
+    { name: "Governance",     boards: ["Governance", "Recovery", "Intelligence"] },
+    { name: "System",         boards: ["Admin", "Emergency"] },
+  ];
 
   const boardThemes = {
     Home:      { active: "from-cyan-400 to-blue-500",     ring: "border-cyan-400/30",     hover: "hover:border-cyan-400/30",     shell: "from-cyan-500/10 to-blue-500/5" },
@@ -1926,6 +1936,16 @@ function PrivateNexusDashboard({ authUser }) {
   };
 
   const theme = boardThemes[activeBoard];
+
+  // Auto-expand whichever sidebar group contains the active board — covers
+  // navigation that jumps boards from outside the sidebar (e.g. Home's
+  // "View all →" links into Inventory) without ever force-closing a group
+  // the user opened manually.
+  useEffect(() => {
+    const grp = boardGroups.find((g) => g.boards.includes(activeBoard));
+    if (!grp) return;
+    setOpenGroups((prev) => (prev.has(grp.name) ? prev : new Set(prev).add(grp.name)));
+  }, [activeBoard]);
 
   const recentApps = [
     { name: "Nextcloud",  logo: "☁️",  category: "Cloud" },
@@ -5920,31 +5940,86 @@ function PrivateNexusDashboard({ authUser }) {
 
       <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[260px_1fr]">
 
-        {/* Sidebar — border and gradient tint track the active board */}
+        {/* Sidebar — border and gradient tint track the active board. Groups
+            collapse to keep the sidebar short; the group holding the active
+            board auto-expands (see the useEffect above). */}
         <aside className={["rounded-2xl border bg-neutral-900/70 bg-gradient-to-br p-4", theme.ring, theme.shell].join(" ")}>
-          <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))" }}>
-            {boards.map((board) => (
-              <button
-                key={board}
-                onClick={() => {
-                  setActiveBoard(board);
-                  if (board !== "Admin") setAdminView(null);
-                }}
-                className={[
-                  "relative rounded-lg px-4 py-2 text-sm text-center transition",
-                  activeBoard === board
-                    ? `bg-gradient-to-r text-black shadow ${boardThemes[board].active}`
-                    : "bg-neutral-800 text-neutral-200 hover:bg-neutral-700",
-                ].join(" ")}
-              >
-                {board}
-                {board === "Alerts" && liveAlerts.length > 0 && (
-                  <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-[9px] font-bold text-white">
-                    {liveAlerts.length > 9 ? "9+" : liveAlerts.length}
-                  </span>
-                )}
-              </button>
-            ))}
+          <div className="space-y-1">
+            {/* Home — pinned standalone, not part of any group */}
+            <button
+              onClick={() => { setActiveBoard("Home"); setAdminView(null); }}
+              className={[
+                "w-full rounded-lg px-4 py-2 text-left text-sm transition",
+                activeBoard === "Home"
+                  ? `bg-gradient-to-r text-black shadow ${boardThemes.Home.active}`
+                  : "bg-neutral-800 text-neutral-200 hover:bg-neutral-700",
+              ].join(" ")}
+            >
+              Home
+            </button>
+
+            {boardGroups.map((group) => {
+              const isOpen = openGroups.has(group.name);
+              const groupHasActive = group.boards.includes(activeBoard);
+              const groupAlertCount = group.boards.includes("Alerts") ? liveAlerts.length : 0;
+              return (
+                <div key={group.name}>
+                  <button
+                    onClick={() =>
+                      setOpenGroups((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(group.name)) next.delete(group.name);
+                        else next.add(group.name);
+                        return next;
+                      })
+                    }
+                    className={[
+                      "flex w-full items-center justify-between rounded-lg px-4 py-2 text-sm transition",
+                      groupHasActive && !isOpen
+                        ? `bg-gradient-to-r text-black shadow ${boardThemes[activeBoard].active}`
+                        : "bg-neutral-800/60 text-neutral-300 hover:bg-neutral-700",
+                    ].join(" ")}
+                  >
+                    <span>{group.name}</span>
+                    <span className="flex items-center gap-2">
+                      {groupAlertCount > 0 && (
+                        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-[9px] font-bold text-white">
+                          {groupAlertCount > 9 ? "9+" : groupAlertCount}
+                        </span>
+                      )}
+                      <span className={["text-[10px] transition-transform", isOpen ? "rotate-90" : ""].join(" ")}>▸</span>
+                    </span>
+                  </button>
+
+                  {isOpen && (
+                    <div className="mt-1 grid gap-1 pl-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))" }}>
+                      {group.boards.map((board) => (
+                        <button
+                          key={board}
+                          onClick={() => {
+                            setActiveBoard(board);
+                            if (board !== "Admin") setAdminView(null);
+                          }}
+                          className={[
+                            "relative rounded-lg px-3 py-1.5 text-center text-xs transition",
+                            activeBoard === board
+                              ? `bg-gradient-to-r text-black shadow ${boardThemes[board].active}`
+                              : "bg-neutral-800/80 text-neutral-300 hover:bg-neutral-700",
+                          ].join(" ")}
+                        >
+                          {board}
+                          {board === "Alerts" && liveAlerts.length > 0 && (
+                            <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-[9px] font-bold text-white">
+                              {liveAlerts.length > 9 ? "9+" : liveAlerts.length}
+                            </span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </aside>
 
