@@ -10,18 +10,22 @@ export const adminRouter = Router();
 
 const docker = getDocker();
 
-// GET /api/admin/backup — real schedule info (static config, not live state)
+// GET /api/admin/backup — static reference info matching the real, documented
+// backup architecture (main infra CLAUDE.md, "Backup Architecture" section) —
+// not live state, this box has no way to check job status on the Gateway/
+// Proxmox host that actually runs these.
 adminRouter.get("/backup", requireRole("viewer"), (_req, res) => {
   res.json({
-    schedule:    "Daily at 02:00 UTC",
-    destination: "Backblaze B2 (encrypted) + Wasabi EU-Central-1",
+    schedule:    "01:00 config sync → 02:00 vzdump (~3h) → 03:00 pn-vps DB dump → 03:30 Gateway pull → 06:00 Hetzner → 07:30 B2",
+    destination: "Hetzner Storage Box + Backblaze B2 (both rclone crypt)",
     lastRun:     "—",
-    nextRun:     "02:00 UTC",
+    nextRun:     "01:00 UTC",
     tiers: [
-      { name: "VM Snapshots",  tool: "Proxmox Backup Server", schedule: "02:00 daily", dest: "QNAP NAS (Tailscale)" },
-      { name: "Config Sync",   tool: "git + cron",            schedule: "01:00 daily", dest: "Forgejo + Codeberg + GitHub" },
-      { name: "Cloud (B2)",    tool: "rclone crypt",          schedule: "03:00 daily", dest: "Backblaze B2" },
-      { name: "Cloud (Wasabi)",tool: "rclone crypt",          schedule: "04:00 daily", dest: "Wasabi EU-Central-1" },
+      { name: "VM Snapshots",           tool: "vzdump (Proxmox)",                              schedule: "02:00 daily",                         dest: "/var/lib/vz/dump (ZFS)" },
+      { name: "Config Sync",            tool: "git + cron",                                    schedule: "01:00 daily",                         dest: "Forgejo → Codeberg + GitHub" },
+      { name: "Cloud (Hetzner)",        tool: "rclone crypt",                                  schedule: "06:00 daily",                         dest: "Hetzner Storage Box" },
+      { name: "Cloud (B2)",             tool: "rclone crypt",                                  schedule: "07:30 daily",                         dest: "Backblaze B2" },
+      { name: "pn-vps PrivateNexus DB", tool: "pg_dump + Gateway pull + rclone crypt",         schedule: "03:00 dump → 03:30 Gateway pull", dest: "pn-vps (14d) → Gateway (30d) → Hetzner + B2" },
     ],
   });
 });
