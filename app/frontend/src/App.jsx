@@ -5382,7 +5382,7 @@ function PrivateNexusDashboard({ authUser }) {
         </div>
 
         {!discDrift ? (
-          <div className="px-4 py-8 text-center text-sm text-neutral-600">Run a scan first, then check drift.</div>
+          <div className="px-4 py-8 text-center text-sm text-neutral-600">Click Check Drift to compare against the last Docker inventory (from either a manual scan or the automated hourly agent).</div>
         ) : !discDrift.ok ? (
           <div className="px-4 py-6 text-center text-sm text-rose-400">{discDrift.error}</div>
         ) : discDrift.drift?.length === 0 ? (
