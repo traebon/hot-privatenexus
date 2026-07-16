@@ -43,11 +43,17 @@ activityRouter.get("/", requireRole("operator"), async (req, res) => {
       conditions.push(`outcome = $${params.length}`);
     }
     if (req.query.from_ts) {
-      params.push(new Date(req.query.from_ts));
+      const d = new Date(req.query.from_ts);
+      if (Number.isNaN(d.getTime()))
+        return res.status(400).json({ ok: false, error: "from_ts must be a valid ISO date" });
+      params.push(d);
       conditions.push(`ts >= $${params.length}`);
     }
     if (req.query.to_ts) {
-      params.push(new Date(req.query.to_ts));
+      const d = new Date(req.query.to_ts);
+      if (Number.isNaN(d.getTime()))
+        return res.status(400).json({ ok: false, error: "to_ts must be a valid ISO date" });
+      params.push(d);
       conditions.push(`ts <= $${params.length}`);
     }
 
