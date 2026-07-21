@@ -402,7 +402,7 @@ export async function initDb() {
       service_id   UUID        REFERENCES services(id) ON DELETE SET NULL,
       service_name TEXT        NOT NULL,
       signal_type  TEXT        NOT NULL
-                               CHECK (signal_type IN ('down_spike','degrading','latency_spike','intermittent','latency_trending','auth_failure_burst')),
+                               CHECK (signal_type IN ('down_spike','degrading','latency_spike','intermittent','latency_trending','auth_failure_burst','resource_trending')),
       severity     TEXT        NOT NULL DEFAULT 'warning'
                                CHECK (severity IN ('critical','warning','info')),
       detail       TEXT        NOT NULL,

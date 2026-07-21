@@ -7554,7 +7554,7 @@ function PrivateNexusDashboard({ authUser }) {
               warning:  "border-amber-400/30 bg-amber-500/10 text-amber-300",
               info:     "border-sky-400/30 bg-sky-500/10 text-sky-300",
             };
-            const SIG_LABELS = { down_spike: "Down Spike", degrading: "Degrading", latency_spike: "Latency Spike", intermittent: "Intermittent", latency_trending: "Latency Trending", auth_failure_burst: "Login Attack" };
+            const SIG_LABELS = { down_spike: "Down Spike", degrading: "Degrading", latency_spike: "Latency Spike", intermittent: "Intermittent", latency_trending: "Latency Trending", auth_failure_burst: "Login Attack", resource_trending: "Resource Trending" };
 
             const runScan = async () => {
               setIntelScanRunning(true); setIntelScanResult(null);

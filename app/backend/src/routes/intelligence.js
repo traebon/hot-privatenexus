@@ -11,6 +11,30 @@ export const intelligenceRouter = Router();
 
 const docker = getDocker();
 
+// ── Shared trend math ────────────────────────────────────────────────────────
+// Simple linear regression slope over a chronologically-ordered (oldest first)
+// numeric series, plus oldest-third vs newest-third averages. Used by both
+// latency_trending (per-service, ratio-based significance test) and
+// resource_trending (per-VM, absolute-delta significance test) — the
+// regression math itself is identical, only what counts as "significant"
+// differs by domain (ms latency spans orders of magnitude; a 0-100 bounded
+// percentage doesn't).
+function linearTrend(valuesChrono) {
+  const n = valuesChrono.length;
+  const xMean = (n - 1) / 2;
+  const yMean = valuesChrono.reduce((s, v) => s + v, 0) / n;
+  let num = 0, den = 0;
+  valuesChrono.forEach((v, i) => {
+    num += (i - xMean) * (v - yMean);
+    den += (i - xMean) ** 2;
+  });
+  const slope = den > 0 ? num / den : 0;
+  const third  = Math.max(1, Math.floor(n / 3));
+  const oldAvg = valuesChrono.slice(0, third).reduce((s, v) => s + v, 0) / third;
+  const newAvg = valuesChrono.slice(-third).reduce((s, v) => s + v, 0) / third;
+  return { slope, oldAvg, newAvg, n };
+}
+
 // ── Signal detection ─────────────────────────────────────────────────────────
 function detectSignals(svc, events) {
   const signals = [];
@@ -92,22 +116,12 @@ function detectSignals(svc, events) {
       // withLatency[0] is newest (recent is ORDER BY ts DESC) — reverse to
       // chronological order so the regression slope reads "ms increase per
       // probe going forward in time", not backward.
-      const chrono = [...withLatency].reverse();
-      const n = chrono.length;
-      const xMean = (n - 1) / 2;
-      const yMean = chrono.reduce((s, e) => s + e.latency_ms, 0) / n;
-      let num = 0, den = 0;
-      chrono.forEach((e, i) => {
-        num += (i - xMean) * (e.latency_ms - yMean);
-        den += (i - xMean) ** 2;
-      });
-      const slope = den > 0 ? num / den : 0;
+      const chrono = [...withLatency].reverse().map(e => e.latency_ms);
+      const { slope, oldAvg, newAvg, n } = linearTrend(chrono);
       // Slope alone is noise-prone (one outlier can tilt a small sample) —
       // also require the newest third to be meaningfully above the oldest
-      // third, so this only fires on a real sustained climb, not a blip.
-      const third  = Math.max(1, Math.floor(n / 3));
-      const oldAvg = chrono.slice(0, third).reduce((s, e) => s + e.latency_ms, 0) / third;
-      const newAvg = chrono.slice(-third).reduce((s, e) => s + e.latency_ms, 0) / third;
+      // third (ratio-based: latency spans orders of magnitude), so this only
+      // fires on a real sustained climb, not a blip.
       if (slope > 5 && oldAvg > 30 && newAvg > oldAvg * 1.6) {
         signals.push({
           type: "latency_trending",
@@ -377,6 +391,9 @@ export async function runIntelligenceScan() {
   const auditResult = await detectAuditAnomalies(pool);
   newSignals += auditResult.newSignals;
 
+  const resourceResult = await detectResourceAnomalies(pool);
+  newSignals += resourceResult.newSignals;
+
   return { new_signals: newSignals, new_proposals: newProposals, executed };
 }
 
@@ -432,6 +449,110 @@ async function detectAuditAnomalies(pool) {
     );
     if (!stillActive.length) {
       await pool.query(`UPDATE intelligence_signals SET resolved_at=NOW() WHERE id=$1`, [ob.id]);
+    }
+  }
+
+  return { newSignals };
+}
+
+// ── Resource usage anomaly detection ─────────────────────────────────────────
+// Prometheus range query — same client this file otherwise has no need for
+// (ops.js has its own instant-query promQuery(), not exported; this is the
+// first range query anywhere in the backend).
+async function promQueryRange(promUrl, query, startSec, endSec, stepSec) {
+  const url = `${promUrl}/api/v1/query_range?query=${encodeURIComponent(query)}&start=${startSec}&end=${endSec}&step=${stepSec}`;
+  const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  const data = await r.json();
+  return data.data?.result || [];
+}
+
+// One entry per fleet-wide metric this checks. minDelta is an absolute
+// percentage-point threshold, not a ratio like latency_trending's -- a 0-100
+// bounded metric going from 5% to 8% is a 1.6x ratio but noise, while 40% to
+// 55% is only 1.375x but a real, meaningful climb. Absolute delta is the
+// correct significance test for this domain; ratio is correct for latency,
+// which spans orders of magnitude. Same regression math (linearTrend),
+// different "is this significant" rule on top.
+const RESOURCE_METRICS = [
+  { key: "cpu",  label: "CPU",
+    query: '100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
+    minDelta: 20 },
+  { key: "ram",  label: "Memory",
+    query: "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
+    minDelta: 15 },
+  { key: "disk", label: "Disk",
+    query: '(1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"})) * 100',
+    minDelta: 10 },
+];
+
+// Not tied to any service, same reasoning as detectAuditAnomalies -- this is
+// host-level, not a specific service's health. service_name holds "<instance>
+// — <metric label>" so multiple metrics on the same VM can be open at once
+// without colliding. No action_hint/remediation-proposal: there's no safe
+// automated fix for "a VM's disk is filling up," same as auth_failure_burst.
+async function detectResourceAnomalies(pool) {
+  const promUrl = process.env.PROMETHEUS_URL || "http://10.10.50.104:9090";
+  const nowSec   = Math.floor(Date.now() / 1000);
+  const startSec = nowSec - 2 * 3600; // 2h lookback, 5m step -> ~24 points
+  const stepSec  = 300;
+
+  const { rows: openTrends } = await pool.query(
+    `SELECT id, service_name AS key FROM intelligence_signals
+     WHERE tenant_id=$1 AND signal_type='resource_trending' AND resolved_at IS NULL`,
+    [HOT_TENANT_ID]
+  );
+  const openKeySet = new Set(openTrends.map(r => r.key));
+  const stillTrendingKeys = new Set();
+
+  const queriedMetrics = new Set(); // labels that queried successfully this cycle
+
+  let newSignals = 0;
+  for (const m of RESOURCE_METRICS) {
+    let series;
+    try {
+      series = await promQueryRange(promUrl, m.query, startSec, nowSec, stepSec);
+      queriedMetrics.add(m.label);
+    } catch (err) {
+      console.error(`[intelligence] resource query failed (${m.key}):`, err.message);
+      continue; // Prometheus unreachable shouldn't abort the whole scan
+    }
+
+    for (const s of series) {
+      const instance = s.metric?.instance;
+      if (!instance) continue;
+      const values = (s.values || [])
+        .map(([, v]) => Number(v))
+        .filter(v => Number.isFinite(v));
+      if (values.length < 8) continue; // not enough history for a real trend
+
+      const { slope, oldAvg, newAvg } = linearTrend(values);
+      const key = `${instance} — ${m.label}`;
+
+      if (slope > 0 && newAvg - oldAvg >= m.minDelta && newAvg <= 95) {
+        stillTrendingKeys.add(key);
+        if (openKeySet.has(key)) continue; // already flagged and still open
+        await pool.query(
+          `INSERT INTO intelligence_signals (tenant_id, service_id, service_name, signal_type, severity, detail)
+           VALUES ($1, NULL, $2, 'resource_trending', $3, $4)`,
+          [
+            HOT_TENANT_ID, key, newAvg >= 85 ? "critical" : "warning",
+            `${m.label} climbing on ${instance}: ~${Math.round(oldAvg)}% → ~${Math.round(newAvg)}% over the last 2h`,
+          ]
+        );
+        newSignals++;
+      }
+    }
+  }
+
+  // Auto-resolve trends that are no longer climbing -- but only for metrics
+  // that actually queried successfully this cycle. A transient Prometheus
+  // failure must not resolve a real open trend just because it couldn't be
+  // re-checked this pass.
+  for (const ot of openTrends) {
+    const metricLabel = ot.key.split(" — ")[1];
+    if (!queriedMetrics.has(metricLabel)) continue;
+    if (!stillTrendingKeys.has(ot.key)) {
+      await pool.query(`UPDATE intelligence_signals SET resolved_at=NOW() WHERE id=$1`, [ot.id]);
     }
   }
 
