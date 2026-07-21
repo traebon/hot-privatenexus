@@ -79,6 +79,46 @@ function detectSignals(svc, events) {
     });
   }
 
+  // 5. Predictive latency trend — the only signal designed to fire BEFORE any
+  // check has actually failed. Signals 1-4 above all require at least one
+  // observed non-healthy or already-slow event; this one looks for a service
+  // that is still passing every recent check (consec === 0) but whose response
+  // time has been climbing steadily across the whole window — the kind of
+  // early warning v5.0's "predictive degradation" gate item is actually meant
+  // to prove (see PrivateNexus_Release_Roadmap_v1.0.md, v5.0 acceptance gate).
+  if (consec === 0) {
+    const withLatency = recent.filter(e => e.status === "healthy" && e.latency_ms != null);
+    if (withLatency.length >= 8) {
+      // withLatency[0] is newest (recent is ORDER BY ts DESC) — reverse to
+      // chronological order so the regression slope reads "ms increase per
+      // probe going forward in time", not backward.
+      const chrono = [...withLatency].reverse();
+      const n = chrono.length;
+      const xMean = (n - 1) / 2;
+      const yMean = chrono.reduce((s, e) => s + e.latency_ms, 0) / n;
+      let num = 0, den = 0;
+      chrono.forEach((e, i) => {
+        num += (i - xMean) * (e.latency_ms - yMean);
+        den += (i - xMean) ** 2;
+      });
+      const slope = den > 0 ? num / den : 0;
+      // Slope alone is noise-prone (one outlier can tilt a small sample) —
+      // also require the newest third to be meaningfully above the oldest
+      // third, so this only fires on a real sustained climb, not a blip.
+      const third  = Math.max(1, Math.floor(n / 3));
+      const oldAvg = chrono.slice(0, third).reduce((s, e) => s + e.latency_ms, 0) / third;
+      const newAvg = chrono.slice(-third).reduce((s, e) => s + e.latency_ms, 0) / third;
+      if (slope > 5 && oldAvg > 30 && newAvg > oldAvg * 1.6) {
+        signals.push({
+          type: "latency_trending",
+          severity: "warning",
+          detail: `Latency climbing while still healthy: ~${Math.round(oldAvg)}ms → ~${Math.round(newAvg)}ms over last ${n} probes (+${Math.round(slope)}ms/probe)`,
+          action_hint: "health.refresh",
+        });
+      }
+    }
+  }
+
   return signals;
 }
 
