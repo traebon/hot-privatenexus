@@ -1,6 +1,6 @@
 import net from "node:net";
 import { Router } from "express";
-import { getPool, HOT_TENANT_ID } from "../db.js";
+import { getPool } from "../db.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
 import { recordChange } from "./governance.js";
@@ -153,7 +153,7 @@ function tcpProbe(host, port, timeoutMs = 8000) {
   });
 }
 
-async function probeService(svc) {
+async function probeService(svc, tenantId) {
   const start = Date.now();
   if (!svc.health_endpoint) return { ok: false, error: "No health endpoint" };
 
@@ -189,11 +189,11 @@ async function probeService(svc) {
     const pool = getPool();
     await Promise.all([
       pool.query("UPDATE services SET status=$1, updated_at=NOW() WHERE id=$2 AND tenant_id=$3",
-        [status, svc.id, HOT_TENANT_ID]),
+        [status, svc.id, tenantId]),
       pool.query(
         `INSERT INTO health_events (tenant_id,service_id,slug,status,status_code,latency_ms,error,source)
          VALUES ($1,$2,$3,$4,$5,$6,$7,'autonomous')`,
-        [HOT_TENANT_ID, svc.id, svc.slug, status, status_code, latency_ms ?? Date.now() - start, error]
+        [tenantId, svc.id, svc.slug, status, status_code, latency_ms ?? Date.now() - start, error]
       ),
     ]);
     return { ok: true, status, status_code, latency_ms };
@@ -203,8 +203,8 @@ async function probeService(svc) {
 }
 
 // ── Autonomous action executor ───────────────────────────────────────────────
-async function executeAction(svc, actionType) {
-  if (actionType === "health.refresh") return probeService(svc);
+async function executeAction(svc, actionType, tenantId) {
+  if (actionType === "health.refresh") return probeService(svc, tenantId);
   if (actionType === "container.restart") {
     if (!svc.container_name) return { ok: false, error: "No container_name on service" };
     if (CONTAINER_BLOCKLIST.has(svc.container_name))
@@ -231,13 +231,15 @@ async function executeAction(svc, actionType) {
 }
 
 // ── Core scan ────────────────────────────────────────────────────────────────
-export async function runIntelligenceScan() {
+// tenantId is required — the scheduler loops this across every tenant (see
+// healthScheduler.js), and each route caller passes req.session.user.tenant_id.
+export async function runIntelligenceScan(tenantId) {
   const pool = getPool();
 
   const { rows: services } = await pool.query(
     `SELECT id, name, slug, category, container_name, health_endpoint, status
      FROM services WHERE tenant_id=$1 AND archived=FALSE`,
-    [HOT_TENANT_ID]
+    [tenantId]
   );
   if (!services.length) return { new_signals: 0, new_proposals: 0, executed: 0 };
 
@@ -250,7 +252,7 @@ export async function runIntelligenceScan() {
        FROM health_events
        WHERE tenant_id=$1 AND service_id=ANY($2) AND ts > NOW() - INTERVAL '2 days'
      ) t WHERE rn <= 20`,
-    [HOT_TENANT_ID, ids]
+    [tenantId, ids]
   );
 
   // Existing open signals — to avoid duplicates. Must NOT bound by fired_at: a
@@ -263,14 +265,14 @@ export async function runIntelligenceScan() {
   const { rows: openSigs } = await pool.query(
     `SELECT service_id, signal_type FROM intelligence_signals
      WHERE tenant_id=$1 AND resolved_at IS NULL`,
-    [HOT_TENANT_ID]
+    [tenantId]
   );
   const openSet = new Set(openSigs.map(s => `${s.service_id}:${s.signal_type}`));
 
   // Load autonomous policies (enabled only)
   const { rows: autoPolicies } = await pool.query(
     "SELECT signal_type, action_type, max_per_hour, cooldown_secs FROM autonomous_policies WHERE enabled=TRUE AND (tenant_id IS NULL OR tenant_id=$1)",
-    [HOT_TENANT_ID]
+    [tenantId]
   );
   const autoMap = new Map(autoPolicies.map(p => [`${p.signal_type}:${p.action_type}`, p]));
 
@@ -287,7 +289,7 @@ export async function runIntelligenceScan() {
      WHERE tenant_id=$1 AND status='executed' AND reviewed_by='autonomous'
        AND executed_at > NOW() - INTERVAL '1 hour'
      GROUP BY service_id, action_type`,
-    [HOT_TENANT_ID]
+    [tenantId]
   );
   const autoExecuted = {};
   for (const r of recentExecs) autoExecuted[`${r.service_id}:${r.action_type}`] = r.n;
@@ -311,7 +313,7 @@ export async function runIntelligenceScan() {
       const { rows: [sigRow] } = await pool.query(
         `INSERT INTO intelligence_signals (tenant_id, service_id, service_name, signal_type, severity, detail)
          VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-        [HOT_TENANT_ID, svc.id, svc.name, sig.type, sig.severity, sig.detail]
+        [tenantId, svc.id, svc.name, sig.type, sig.severity, sig.detail]
       );
       openSet.add(key);
       newSignals++;
@@ -330,7 +332,7 @@ export async function runIntelligenceScan() {
         `SELECT id FROM remediation_proposals
          WHERE tenant_id=$1 AND service_id=$2 AND action_type=$3
            AND status IN ('pending','approved')`,
-        [HOT_TENANT_ID, svc.id, actionType]
+        [tenantId, svc.id, actionType]
       );
       if (existingProp.length) continue;
 
@@ -354,15 +356,15 @@ export async function runIntelligenceScan() {
         if ((autoExecuted[execKey] || 0) >= autoPolicy.max_per_hour) continue;
         autoExecuted[execKey] = (autoExecuted[execKey] || 0) + 1;
 
-        const result = await executeAction(svc, actionType);
+        const result = await executeAction(svc, actionType, tenantId);
         await pool.query(
           `INSERT INTO remediation_proposals
              (tenant_id, signal_id, service_id, service_name, action_type, rationale,
               status, requires_approval, reviewed_by, reviewed_at, executed_at, result)
            VALUES ($1,$2,$3,$4,$5,$6,'executed',FALSE,'autonomous',NOW(),NOW(),$7)`,
-          [HOT_TENANT_ID, sigRow.id, svc.id, svc.name, actionType, rationale, JSON.stringify(result)]
+          [tenantId, sigRow.id, svc.id, svc.name, actionType, rationale, JSON.stringify(result)]
         );
-        recordChange(HOT_TENANT_ID, svc.id, svc.name, "autonomous_action",
+        recordChange(tenantId, svc.id, svc.name, "autonomous_action",
           "intelligence-engine", `Autonomous ${actionType}: ${sig.detail}`, result);
         executed++;
       } else {
@@ -371,7 +373,7 @@ export async function runIntelligenceScan() {
           `INSERT INTO remediation_proposals
              (tenant_id, signal_id, service_id, service_name, action_type, rationale, requires_approval)
            VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-          [HOT_TENANT_ID, sigRow.id, svc.id, svc.name, actionType, rationale, requiresApproval]
+          [tenantId, sigRow.id, svc.id, svc.name, actionType, rationale, requiresApproval]
         );
         newProposals++;
       }
@@ -383,15 +385,15 @@ export async function runIntelligenceScan() {
         `UPDATE intelligence_signals SET resolved_at=NOW()
          WHERE tenant_id=$1 AND service_id=$2 AND resolved_at IS NULL
            AND fired_at < NOW() - INTERVAL '10 minutes'`,
-        [HOT_TENANT_ID, svc.id]
+        [tenantId, svc.id]
       );
     }
   }
 
-  const auditResult = await detectAuditAnomalies(pool);
+  const auditResult = await detectAuditAnomalies(pool, tenantId);
   newSignals += auditResult.newSignals;
 
-  const resourceResult = await detectResourceAnomalies(pool);
+  const resourceResult = await detectResourceAnomalies(pool, tenantId);
   newSignals += resourceResult.newSignals;
 
   return { new_signals: newSignals, new_proposals: newProposals, executed };
@@ -404,7 +406,7 @@ export async function runIntelligenceScan() {
 // loop above. No matching action_hint/remediation-proposal path either: there
 // is no automated fix for "someone is guessing passwords" the way there is
 // for a slow health check, so this is signal-only, for a human to review.
-async function detectAuditAnomalies(pool) {
+async function detectAuditAnomalies(pool, tenantId) {
   const WINDOW_MINUTES = 30;
   const THRESHOLD = 5;
 
@@ -415,13 +417,13 @@ async function detectAuditAnomalies(pool) {
        AND ip IS NOT NULL AND ts > NOW() - INTERVAL '${WINDOW_MINUTES} minutes'
      GROUP BY ip
      HAVING count(*) >= $2`,
-    [HOT_TENANT_ID, THRESHOLD]
+    [tenantId, THRESHOLD]
   );
 
   const { rows: openBursts } = await pool.query(
     `SELECT id, service_name AS ip FROM intelligence_signals
      WHERE tenant_id=$1 AND signal_type='auth_failure_burst' AND resolved_at IS NULL`,
-    [HOT_TENANT_ID]
+    [tenantId]
   );
   const openIpSet = new Set(openBursts.map(r => r.ip));
 
@@ -433,7 +435,7 @@ async function detectAuditAnomalies(pool) {
       `INSERT INTO intelligence_signals (tenant_id, service_id, service_name, signal_type, severity, detail)
        VALUES ($1, NULL, $2, 'auth_failure_burst', $3, $4)`,
       [
-        HOT_TENANT_ID, b.ip, severity,
+        tenantId, b.ip, severity,
         `${b.n} failed login attempts from this IP in the last ${WINDOW_MINUTES} minutes (latest: ${new Date(b.last_attempt).toISOString()})`,
       ]
     );
@@ -445,7 +447,7 @@ async function detectAuditAnomalies(pool) {
     const { rows: stillActive } = await pool.query(
       `SELECT 1 FROM audit_log WHERE tenant_id=$1 AND action='auth.login' AND outcome='failure'
          AND ip=$2 AND ts > NOW() - INTERVAL '${WINDOW_MINUTES} minutes' LIMIT 1`,
-      [HOT_TENANT_ID, ob.ip]
+      [tenantId, ob.ip]
     );
     if (!stillActive.length) {
       await pool.query(`UPDATE intelligence_signals SET resolved_at=NOW() WHERE id=$1`, [ob.id]);
@@ -490,7 +492,13 @@ const RESOURCE_METRICS = [
 // — <metric label>" so multiple metrics on the same VM can be open at once
 // without colliding. No action_hint/remediation-proposal: there's no safe
 // automated fix for "a VM's disk is filling up," same as auth_failure_burst.
-async function detectResourceAnomalies(pool) {
+// NOTE: the underlying Prometheus metrics here are fleet/host-wide, not
+// per-tenant data — this attributes the resulting signal to whichever
+// tenant's scan happened to run it, which double-reports the same VM trend
+// once per tenant if more than one tenant is ever scanned. Fine for the
+// single-tenant reality today; revisit (e.g. a NULL-tenant "platform" signal
+// class) if/when a second tenant is actually onboarded.
+async function detectResourceAnomalies(pool, tenantId) {
   const promUrl = process.env.PROMETHEUS_URL || "http://10.10.50.104:9090";
   const nowSec   = Math.floor(Date.now() / 1000);
   const startSec = nowSec - 2 * 3600; // 2h lookback, 5m step -> ~24 points
@@ -499,7 +507,7 @@ async function detectResourceAnomalies(pool) {
   const { rows: openTrends } = await pool.query(
     `SELECT id, service_name AS key FROM intelligence_signals
      WHERE tenant_id=$1 AND signal_type='resource_trending' AND resolved_at IS NULL`,
-    [HOT_TENANT_ID]
+    [tenantId]
   );
   const openKeySet = new Set(openTrends.map(r => r.key));
   const stillTrendingKeys = new Set();
@@ -535,7 +543,7 @@ async function detectResourceAnomalies(pool) {
           `INSERT INTO intelligence_signals (tenant_id, service_id, service_name, signal_type, severity, detail)
            VALUES ($1, NULL, $2, 'resource_trending', $3, $4)`,
           [
-            HOT_TENANT_ID, key, newAvg >= 85 ? "critical" : "warning",
+            tenantId, key, newAvg >= 85 ? "critical" : "warning",
             `${m.label} climbing on ${instance}: ~${Math.round(oldAvg)}% → ~${Math.round(newAvg)}% over the last 2h`,
           ]
         );
@@ -567,7 +575,7 @@ intelligenceRouter.get("/signals", requireRole("viewer"), async (req, res) => {
       `SELECT * FROM intelligence_signals
        WHERE tenant_id=$1 AND fired_at > NOW() - INTERVAL '1 hour' * $2
        ORDER BY fired_at DESC LIMIT 100`,
-      [HOT_TENANT_ID, hours]
+      [req.session.user.tenant_id, hours]
     );
     const counts = { critical: 0, warning: 0, info: 0, total: rows.length };
     for (const r of rows) if (r.severity in counts) counts[r.severity]++;
@@ -585,7 +593,7 @@ intelligenceRouter.post("/signals/:id/ack", requireRole("operator"), async (req,
     const { rows: [row] } = await getPool().query(
       `UPDATE intelligence_signals SET acknowledged=TRUE, ack_by=$1, ack_at=NOW()
        WHERE id=$2 AND tenant_id=$3 RETURNING *`,
-      [actor, req.params.id, HOT_TENANT_ID]
+      [actor, req.params.id, req.session.user.tenant_id]
     );
     if (!row) return res.status(404).json({ ok: false, error: "Signal not found" });
     res.json({ ok: true, signal: row });
@@ -601,7 +609,7 @@ intelligenceRouter.post("/signals/:id/resolve", requireRole("operator"), async (
     const { rows: [row] } = await getPool().query(
       `UPDATE intelligence_signals SET resolved_at=NOW(), acknowledged=TRUE
        WHERE id=$1 AND tenant_id=$2 RETURNING *`,
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     if (!row) return res.status(404).json({ ok: false, error: "Signal not found" });
     res.json({ ok: true, signal: row });
@@ -615,7 +623,7 @@ intelligenceRouter.post("/signals/:id/resolve", requireRole("operator"), async (
 intelligenceRouter.get("/proposals", requireRole("viewer"), async (req, res) => {
   try {
     const status = req.query.status || "pending";
-    const params = [HOT_TENANT_ID];
+    const params = [req.session.user.tenant_id];
     let where = "tenant_id=$1";
     if (status !== "all") { params.push(status); where += ` AND status=$${params.length}`; }
     const { rows } = await getPool().query(
@@ -636,7 +644,7 @@ intelligenceRouter.post("/proposals/:id/approve", requireRole("operator"), async
     const actor = req.session?.user?.username || "operator";
     const { rows: [prop] } = await pool.query(
       "SELECT * FROM remediation_proposals WHERE id=$1 AND tenant_id=$2",
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     if (!prop) return res.status(404).json({ ok: false, error: "Proposal not found" });
     if (prop.status !== "pending") return res.status(409).json({ ok: false, error: `Already ${prop.status}` });
@@ -644,11 +652,11 @@ intelligenceRouter.post("/proposals/:id/approve", requireRole("operator"), async
     // Fetch service for execution
     const { rows: [svc] } = await pool.query(
       "SELECT id, name, slug, container_name, health_endpoint FROM services WHERE id=$1 AND tenant_id=$2",
-      [prop.service_id, HOT_TENANT_ID]
+      [prop.service_id, req.session.user.tenant_id]
     );
     if (!svc) return res.status(404).json({ ok: false, error: "Service not found" });
 
-    const result = await executeAction(svc, prop.action_type);
+    const result = await executeAction(svc, prop.action_type, req.session.user.tenant_id);
     const newStatus = result.ok ? "executed" : "failed";
     await pool.query(
       `UPDATE remediation_proposals
@@ -657,7 +665,7 @@ intelligenceRouter.post("/proposals/:id/approve", requireRole("operator"), async
       [newStatus, actor, JSON.stringify(result), prop.id]
     );
     recordAudit(req, `intelligence.proposal.${newStatus}`, prop.service_name, newStatus === "executed" ? "success" : "failure", result);
-    recordChange(HOT_TENANT_ID, prop.service_id, prop.service_name, "proposal_executed",
+    recordChange(req.session.user.tenant_id, prop.service_id, prop.service_name, "proposal_executed",
       actor, `${prop.action_type} proposal ${newStatus}`, result);
     res.json({ ok: true, result, status: newStatus });
   } catch (err) {
@@ -672,7 +680,7 @@ intelligenceRouter.post("/proposals/:id/dismiss", requireRole("operator"), async
     const actor = req.session?.user?.username || "operator";
     const { rows: [row] } = await getPool().query(
       "UPDATE remediation_proposals SET status='dismissed', reviewed_by=$1, reviewed_at=NOW() WHERE id=$2 AND tenant_id=$3 AND status='pending' RETURNING *",
-      [actor, req.params.id, HOT_TENANT_ID]
+      [actor, req.params.id, req.session.user.tenant_id]
     );
     if (!row) return res.status(404).json({ ok: false, error: "Not found or not pending" });
     res.json({ ok: true });
@@ -683,11 +691,11 @@ intelligenceRouter.post("/proposals/:id/dismiss", requireRole("operator"), async
 });
 
 // ── GET /api/intelligence/autonomous ─────────────────────────────────────────
-intelligenceRouter.get("/autonomous", requireRole("viewer"), async (_req, res) => {
+intelligenceRouter.get("/autonomous", requireRole("viewer"), async (req, res) => {
   try {
     const { rows } = await getPool().query(
       "SELECT * FROM autonomous_policies WHERE (tenant_id IS NULL OR tenant_id=$1) ORDER BY signal_type, action_type",
-      [HOT_TENANT_ID]
+      [req.session.user.tenant_id]
     );
     res.json({ ok: true, policies: rows });
   } catch (err) {
@@ -706,7 +714,7 @@ intelligenceRouter.patch("/autonomous/:id", requireRole("admin"), async (req, re
     if (max_per_hour  != null)        { params.push(max_per_hour);  sets.push(`max_per_hour=$${params.length}`); }
     if (cooldown_secs != null)        { params.push(cooldown_secs); sets.push(`cooldown_secs=$${params.length}`); }
     if (!sets.length) return res.status(400).json({ ok: false, error: "Nothing to update" });
-    params.push(req.params.id, HOT_TENANT_ID);
+    params.push(req.params.id, req.session.user.tenant_id);
     const { rows: [row] } = await pool.query(
       `UPDATE autonomous_policies SET ${sets.join(",")} WHERE id=$${params.length - 1} AND (tenant_id IS NULL OR tenant_id=$${params.length}) RETURNING *`,
       params
@@ -724,7 +732,7 @@ intelligenceRouter.patch("/autonomous/:id", requireRole("admin"), async (req, re
 // ── POST /api/intelligence/scan ───────────────────────────────────────────────
 intelligenceRouter.post("/scan", requireRole("operator"), async (req, res) => {
   try {
-    const result = await runIntelligenceScan();
+    const result = await runIntelligenceScan(req.session.user.tenant_id);
     recordAudit(req, "intelligence.scan", "estate", "success", result);
     res.json({ ok: true, ...result });
   } catch (err) {
@@ -738,10 +746,10 @@ intelligenceRouter.post("/service/:id/probe", requireRole("operator"), async (re
   try {
     const { rows: [svc] } = await getPool().query(
       "SELECT id, name, slug, health_endpoint FROM services WHERE id=$1 AND tenant_id=$2 AND archived=FALSE",
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     if (!svc) return res.status(404).json({ ok: false, error: "Service not found" });
-    const result = await probeService(svc);
+    const result = await probeService(svc, req.session.user.tenant_id);
     recordAudit(req, "intelligence.service.probe", svc.name, result.ok ? "success" : "failure", result);
     res.json({ ok: true, service: svc.slug, ...result });
   } catch (err) {
@@ -756,14 +764,14 @@ intelligenceRouter.post("/service/:id/restart", requireRole("operator"), async (
     const pool = getPool();
     const { rows: [svc] } = await pool.query(
       "SELECT id, name, slug, container_name FROM services WHERE id=$1 AND tenant_id=$2 AND archived=FALSE",
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     if (!svc) return res.status(404).json({ ok: false, error: "Service not found" });
     if (!svc.container_name) return res.status(422).json({ ok: false, error: "container_name not set on service" });
-    const result = await executeAction(svc, "container.restart");
+    const result = await executeAction(svc, "container.restart", req.session.user.tenant_id);
     const actor  = req.session?.user?.username || "operator";
     recordAudit(req, "intelligence.service.restart", svc.name, result.ok ? "success" : "failure", result);
-    recordChange(HOT_TENANT_ID, svc.id, svc.name, "container_restart", actor, `MCP-triggered restart of ${svc.container_name}`, result);
+    recordChange(req.session.user.tenant_id, svc.id, svc.name, "container_restart", actor, `MCP-triggered restart of ${svc.container_name}`, result);
     res.json({ ok: true, service: svc.slug, ...result });
   } catch (err) {
     console.error("[intelligence] error:", err.message);

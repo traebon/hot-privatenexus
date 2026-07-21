@@ -7,7 +7,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { recordAudit } from "../auditLog.js";
 import { requireRole, userRole } from "../middleware/requireRole.js";
-import { getPool, HOT_TENANT_ID } from "../db.js";
+import { getPool } from "../db.js";
 import { recordChange } from "./governance.js";
 
 export const actionsRouter = Router();
@@ -364,14 +364,14 @@ function requiredLevel(elevation) {
   return ROLE_LEVEL[elevation] ?? 1;
 }
 
-async function blastRadiusCheck(serviceId) {
+async function blastRadiusCheck(serviceId, tenantId) {
   if (!serviceId) return { count: 0, hard: 0, affected: [] };
   const { rows } = await getPool().query(
     `SELECT sd.dep_type, s.name, s.slug, s.status
      FROM service_dependencies sd
      JOIN services s ON s.id = sd.downstream_id
      WHERE sd.upstream_id = $1 AND sd.tenant_id = $2`,
-    [serviceId, HOT_TENANT_ID]
+    [serviceId, tenantId]
   );
   return {
     count: rows.length,
@@ -473,7 +473,7 @@ actionsRouter.post("/run/v2", requireRole("operator"), async (req, res) => {
 
   // Blast-radius check
   if (policy?.blast_radius_check && service_id && !force) {
-    const br = await blastRadiusCheck(service_id);
+    const br = await blastRadiusCheck(service_id, req.session.user.tenant_id);
     if (br.hard > 0) {
       return res.status(409).json({
         ok: false,
@@ -500,7 +500,7 @@ actionsRouter.post("/run/v2", requireRole("operator"), async (req, res) => {
     const { rows } = await getPool().query(
       `INSERT INTO action_requests (tenant_id, action_type, params, proposed_by)
        VALUES ($1, $2, $3, $4) RETURNING id`,
-      [HOT_TENANT_ID, `container.${action}`, JSON.stringify({ containerId: id, service_id }), req.session?.user?.username || "unknown"]
+      [req.session.user.tenant_id, `container.${action}`, JSON.stringify({ containerId: id, service_id }), req.session?.user?.username || "unknown"]
     );
     recordAudit(req, `container.${action}.queued`, id, "success", { requestId: rows[0].id });
     return res.status(202).json({ ok: true, queued: true, requestId: rows[0].id, message: "Action queued for approval" });
@@ -525,7 +525,7 @@ actionsRouter.post("/run/v2", requireRole("operator"), async (req, res) => {
 // GET /api/actions/requests?status=pending
 actionsRouter.get("/requests", requireRole("operator"), async (req, res) => {
   const status = req.query.status;
-  const params = [HOT_TENANT_ID];
+  const params = [req.session.user.tenant_id];
   let where = "tenant_id = $1";
   if (status) { params.push(status); where += ` AND status = $${params.length}`; }
   try {
@@ -554,18 +554,18 @@ actionsRouter.post("/requests", requireRole("operator"), async (req, res) => {
   // Get service name if service_id provided
   let service_name = null;
   if (service_id) {
-    const { rows } = await getPool().query("SELECT name FROM services WHERE id = $1", [service_id]);
+    const { rows } = await getPool().query("SELECT name FROM services WHERE id = $1 AND tenant_id = $2", [service_id, req.session.user.tenant_id]);
     service_name = rows[0]?.name || null;
   }
 
   // Blast-radius check (informational — stored in params, not blocking here)
-  const br = service_id ? await blastRadiusCheck(service_id) : { count: 0, hard: 0, affected: [] };
+  const br = service_id ? await blastRadiusCheck(service_id, req.session.user.tenant_id) : { count: 0, hard: 0, affected: [] };
 
   try {
     const { rows } = await getPool().query(
       `INSERT INTO action_requests (tenant_id, service_id, service_name, action_type, params, proposed_by)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [HOT_TENANT_ID, service_id || null, service_name, action_type,
+      [req.session.user.tenant_id, service_id || null, service_name, action_type,
        JSON.stringify({ ...params, blast_radius: br }), req.session?.user?.username || "unknown"]
     );
     recordAudit(req, "action.request.propose", action_type, "success", { id: rows[0].id });
@@ -578,7 +578,7 @@ actionsRouter.post("/requests/:id/approve", requireRole("admin"), async (req, re
   const db = getPool();
   const { rows } = await db.query(
     "SELECT * FROM action_requests WHERE id = $1 AND tenant_id = $2",
-    [req.params.id, HOT_TENANT_ID]
+    [req.params.id, req.session.user.tenant_id]
   );
   const actionReq = rows[0];
   if (!actionReq) return res.status(404).json({ ok: false, error: "Request not found" });
@@ -610,9 +610,9 @@ actionsRouter.post("/requests/:id/approve", requireRole("admin"), async (req, re
       await db.query(
         `INSERT INTO deploy_rollback_points (tenant_id, service_id, container_name, previous_image, deployed_image, deployed_by)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [HOT_TENANT_ID, actionReq.service_id, container_name, oldImage, newImage, req.session?.user?.username || "unknown"]
+        [req.session.user.tenant_id, actionReq.service_id, container_name, oldImage, newImage, req.session?.user?.username || "unknown"]
       );
-      recordChange(HOT_TENANT_ID, actionReq.service_id, actionReq.service_name, "service_deployed",
+      recordChange(req.session.user.tenant_id, actionReq.service_id, actionReq.service_name, "service_deployed",
         req.session?.user?.username || "unknown",
         `Deployed '${container_name}' → ${newImage} (was ${oldImage})`);
 
@@ -647,7 +647,7 @@ actionsRouter.post("/requests/:id/approve", requireRole("admin"), async (req, re
 actionsRouter.post("/requests/:id/reject", requireRole("admin"), async (req, res) => {
   const { rows } = await getPool().query(
     "SELECT * FROM action_requests WHERE id = $1 AND tenant_id = $2",
-    [req.params.id, HOT_TENANT_ID]
+    [req.params.id, req.session.user.tenant_id]
   );
   if (!rows[0]) return res.status(404).json({ ok: false, error: "Request not found" });
   if (rows[0].status !== "pending")
@@ -668,7 +668,7 @@ actionsRouter.post("/deploy", requireRole("admin"), async (req, res) => {
 
   // Blast-radius check
   if (service_id && !force) {
-    const br = await blastRadiusCheck(service_id);
+    const br = await blastRadiusCheck(service_id, req.session.user.tenant_id);
     if (br.hard > 0) {
       return res.status(409).json({
         ok: false, blast_radius: true, hard_deps: br.hard, affected: br.affected,
@@ -680,7 +680,7 @@ actionsRouter.post("/deploy", requireRole("admin"), async (req, res) => {
   // Fetch service name
   let service_name = null;
   if (service_id) {
-    const { rows } = await getPool().query("SELECT name FROM services WHERE id = $1", [service_id]);
+    const { rows } = await getPool().query("SELECT name FROM services WHERE id = $1 AND tenant_id = $2", [service_id, req.session.user.tenant_id]);
     service_name = rows[0]?.name;
   }
 
@@ -689,10 +689,10 @@ actionsRouter.post("/deploy", requireRole("admin"), async (req, res) => {
     await getPool().query(
       `INSERT INTO deploy_rollback_points (tenant_id, service_id, container_name, previous_image, deployed_image, deployed_by)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [HOT_TENANT_ID, service_id || null, container_name, oldImage, newImage, req.session?.user?.username || "unknown"]
+      [req.session.user.tenant_id, service_id || null, container_name, oldImage, newImage, req.session?.user?.username || "unknown"]
     );
     recordAudit(req, "service.deploy", container_name, "success", { oldImage, newImage });
-    recordChange(HOT_TENANT_ID, service_id, service_name, "service_deployed",
+    recordChange(req.session.user.tenant_id, service_id, service_name, "service_deployed",
       req.session?.user?.username || "unknown",
       `Deployed '${container_name}' → ${newImage} (was: ${oldImage})`);
     res.json({ ok: true, oldImage, newImage, container: container_name });
@@ -709,9 +709,11 @@ actionsRouter.post("/rollback", requireRole("admin"), async (req, res) => {
 
   // Find rollback point
   const pointQuery = rollback_point_id
-    ? "SELECT * FROM deploy_rollback_points WHERE id = $1 AND container_name = $2"
-    : "SELECT * FROM deploy_rollback_points WHERE container_name = $1 ORDER BY created_at DESC LIMIT 1";
-  const pointParams = rollback_point_id ? [rollback_point_id, container_name] : [container_name];
+    ? "SELECT * FROM deploy_rollback_points WHERE id = $1 AND container_name = $2 AND tenant_id = $3"
+    : "SELECT * FROM deploy_rollback_points WHERE container_name = $1 AND tenant_id = $2 ORDER BY created_at DESC LIMIT 1";
+  const pointParams = rollback_point_id
+    ? [rollback_point_id, container_name, req.session.user.tenant_id]
+    : [container_name, req.session.user.tenant_id];
   const { rows: points } = await getPool().query(pointQuery, pointParams);
   if (!points[0]) return res.status(404).json({ ok: false, error: "No rollback point found for this container" });
   const point = points[0];
@@ -719,7 +721,7 @@ actionsRouter.post("/rollback", requireRole("admin"), async (req, res) => {
   // Blast-radius check
   const svcId = service_id || point.service_id;
   if (svcId && !force) {
-    const br = await blastRadiusCheck(svcId);
+    const br = await blastRadiusCheck(svcId, req.session.user.tenant_id);
     if (br.hard > 0) {
       return res.status(409).json({
         ok: false, blast_radius: true, hard_deps: br.hard, affected: br.affected,
@@ -731,7 +733,7 @@ actionsRouter.post("/rollback", requireRole("admin"), async (req, res) => {
   try {
     const { oldImage, newImage } = await executeDeployContainer(container_name, point.previous_image);
     recordAudit(req, "service.rollback", container_name, "success", { restoredImage: point.previous_image });
-    recordChange(HOT_TENANT_ID, svcId, null, "service_rolled_back",
+    recordChange(req.session.user.tenant_id, svcId, null, "service_rolled_back",
       req.session?.user?.username || "unknown",
       `Rolled back '${container_name}' → ${point.previous_image}`);
     res.json({ ok: true, restoredImage: point.previous_image, container: container_name });
@@ -748,7 +750,7 @@ actionsRouter.get("/rollback-points/:container", requireRole("admin"), async (re
       `SELECT * FROM deploy_rollback_points
        WHERE container_name = $1 AND tenant_id = $2
        ORDER BY created_at DESC LIMIT 10`,
-      [req.params.container, HOT_TENANT_ID]
+      [req.params.container, req.session.user.tenant_id]
     );
     res.json({ ok: true, points: rows });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }

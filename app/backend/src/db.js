@@ -17,6 +17,30 @@ export function getPool() {
   return pool;
 }
 
+// Dynamic tenant resolution — replaces the HOT_TENANT_ID hardcode at the one
+// point where a user's tenant should actually be looked up: login. Existing
+// users with no tenant_memberships row (i.e. everyone before this was wired
+// up) are auto-provisioned into House of Trae on first resolution, so current
+// behavior is preserved with no migration step. New tenants are onboarded by
+// a SuperAdmin explicitly inserting a membership row (see routes/tenants.js) —
+// resolution here never creates a *new* tenant, only a membership into an
+// existing one.
+export async function resolveTenantForUser(userSub) {
+  const { rows } = await pool.query(
+    "SELECT tenant_id FROM tenant_memberships WHERE user_sub = $1 ORDER BY joined_at ASC LIMIT 1",
+    [userSub]
+  );
+  if (rows.length) return rows[0].tenant_id;
+
+  await pool.query(
+    `INSERT INTO tenant_memberships (user_sub, tenant_id, role)
+     VALUES ($1, $2, 'member')
+     ON CONFLICT (user_sub, tenant_id) DO NOTHING`,
+    [userSub, HOT_TENANT_ID]
+  );
+  return HOT_TENANT_ID;
+}
+
 export async function initDb() {
   pool = new Pool({
     host:     process.env.DB_HOST     || "privatenexus-db",

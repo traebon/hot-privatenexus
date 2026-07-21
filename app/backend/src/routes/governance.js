@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPool, HOT_TENANT_ID } from "../db.js";
+import { getPool } from "../db.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
 
@@ -122,9 +122,9 @@ async function evaluateViolations(tenantId) {
 // ── Routes ──────────────────────────────────────────────────────────────────
 
 // GET /api/governance/summary
-governanceRouter.get("/summary", requireRole("viewer"), async (_req, res) => {
+governanceRouter.get("/summary", requireRole("viewer"), async (req, res) => {
   try {
-    const v = await evaluateViolations(HOT_TENANT_ID);
+    const v = await evaluateViolations(req.session.user.tenant_id);
     const s = { critical: 0, warning: 0, info: 0, total: v.length };
     for (const x of v) s[x.severity] = (s[x.severity] || 0) + 1;
     res.json({ ok: true, ...s });
@@ -135,9 +135,9 @@ governanceRouter.get("/summary", requireRole("viewer"), async (_req, res) => {
 });
 
 // GET /api/governance/recommendations
-governanceRouter.get("/recommendations", requireRole("viewer"), async (_req, res) => {
+governanceRouter.get("/recommendations", requireRole("viewer"), async (req, res) => {
   try {
-    const violations = await evaluateViolations(HOT_TENANT_ID);
+    const violations = await evaluateViolations(req.session.user.tenant_id);
     res.json({ ok: true, violations, count: violations.length });
   } catch (err) {
     console.error("[governance] error:", err.message);
@@ -146,13 +146,13 @@ governanceRouter.get("/recommendations", requireRole("viewer"), async (_req, res
 });
 
 // GET /api/governance/rules
-governanceRouter.get("/rules", requireRole("viewer"), async (_req, res) => {
+governanceRouter.get("/rules", requireRole("viewer"), async (req, res) => {
   try {
     const { rows } = await getPool().query(
       `SELECT * FROM policy_rules
        WHERE tenant_id IS NULL OR tenant_id = $1
        ORDER BY severity, name`,
-      [HOT_TENANT_ID]
+      [req.session.user.tenant_id]
     );
     res.json({ ok: true, rules: rows });
   } catch (err) {
@@ -178,7 +178,7 @@ governanceRouter.patch("/rules/:key/toggle", requireRole("admin"), async (req, r
 });
 
 // GET /api/governance/exceptions
-governanceRouter.get("/exceptions", requireRole("viewer"), async (_req, res) => {
+governanceRouter.get("/exceptions", requireRole("viewer"), async (req, res) => {
   try {
     const { rows } = await getPool().query(
       `SELECT pe.*, s.name AS service_name, s.slug AS service_slug
@@ -186,7 +186,7 @@ governanceRouter.get("/exceptions", requireRole("viewer"), async (_req, res) => 
        JOIN services s ON s.id = pe.service_id
        WHERE pe.tenant_id = $1
        ORDER BY pe.created_at DESC`,
-      [HOT_TENANT_ID]
+      [req.session.user.tenant_id]
     );
     res.json({ ok: true, exceptions: rows });
   } catch (err) {
@@ -208,7 +208,7 @@ governanceRouter.post("/exceptions", requireRole("admin"), async (req, res) => {
          SET reason = EXCLUDED.reason, expires_at = EXCLUDED.expires_at,
              created_by = EXCLUDED.created_by, created_at = NOW()
        RETURNING *`,
-      [HOT_TENANT_ID, service_id, rule_key, reason, expires_at || null,
+      [req.session.user.tenant_id, service_id, rule_key, reason, expires_at || null,
        req.session?.user?.username || "unknown"]
     );
     recordAudit(req, "governance.exception.create", rule_key, "success", { service_id, reason, expires_at: expires_at || null });
@@ -224,7 +224,7 @@ governanceRouter.delete("/exceptions/:id", requireRole("admin"), async (req, res
   try {
     const { rows } = await getPool().query(
       `DELETE FROM policy_exceptions WHERE id = $1 AND tenant_id = $2 RETURNING *`,
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     if (!rows.length) return res.status(404).json({ ok: false, error: "Exception not found" });
     recordAudit(req, "governance.exception.delete", rows[0].rule_key, "success", { service_id: rows[0].service_id, reason: rows[0].reason });
@@ -240,7 +240,7 @@ governanceRouter.get("/change-records", requireRole("viewer"), async (req, res) 
   const limit  = Math.min(Number(req.query.limit  || 50), 200);
   const offset = Number(req.query.offset || 0);
   const conditions = ["tenant_id = $1"];
-  const params = [HOT_TENANT_ID];
+  const params = [req.session.user.tenant_id];
   if (req.query.service_id) {
     params.push(req.query.service_id);
     conditions.push(`service_id = $${params.length}`);
@@ -262,19 +262,20 @@ governanceRouter.get("/change-records", requireRole("viewer"), async (req, res) 
 });
 
 // GET /api/governance/report — full structured report
-governanceRouter.get("/report", requireRole("admin"), async (_req, res) => {
+governanceRouter.get("/report", requireRole("admin"), async (req, res) => {
   const db = getPool();
+  const tenantId = req.session.user.tenant_id;
   try {
     const [violations, { rows: svcs }, { rows: staleBackups }, { rows: activity }] =
       await Promise.all([
-        evaluateViolations(HOT_TENANT_ID),
+        evaluateViolations(tenantId),
         db.query(
           `SELECT s.id, s.name, s.slug, s.category, s.access_mode, s.backup_policy,
                   s.owner, s.health_endpoint, s.recovery_runbook_url, s.status,
                   w.name AS workspace_name
            FROM services s LEFT JOIN workspaces w ON w.id = s.workspace_id
            WHERE s.tenant_id = $1 AND s.archived = FALSE ORDER BY s.name`,
-          [HOT_TENANT_ID]
+          [tenantId]
         ),
         db.query(
           `SELECT s.id, s.name, s.slug, w.name AS workspace_name,
@@ -287,7 +288,7 @@ governanceRouter.get("/report", requireRole("admin"), async (_req, res) => {
            GROUP BY s.id, s.name, s.slug, w.name
            HAVING MAX(sb.taken_at) IS NULL OR MAX(sb.taken_at) < NOW() - INTERVAL '7 days'
            ORDER BY age_days DESC NULLS FIRST`,
-          [HOT_TENANT_ID]
+          [tenantId]
         ),
         db.query(
           `SELECT username,
@@ -295,7 +296,7 @@ governanceRouter.get("/report", requireRole("admin"), async (_req, res) => {
                   COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '90 days')::int AS actions_90d
            FROM audit_log WHERE tenant_id = $1
            GROUP BY username ORDER BY actions_90d DESC LIMIT 20`,
-          [HOT_TENANT_ID]
+          [tenantId]
         ),
       ]);
 
@@ -304,7 +305,7 @@ governanceRouter.get("/report", requireRole("admin"), async (_req, res) => {
     res.json({
       ok: true,
       generated_at: new Date().toISOString(),
-      tenant_id: HOT_TENANT_ID,
+      tenant_id: tenantId,
       summary: {
         total_services:    svcs.length,
         total_violations:  violations.length,
@@ -335,15 +336,15 @@ governanceRouter.get("/report", requireRole("admin"), async (_req, res) => {
 });
 
 // GET /api/governance/report/export — JSON download
-governanceRouter.get("/report/export", requireRole("admin"), async (_req, res) => {
+governanceRouter.get("/report/export", requireRole("admin"), async (req, res) => {
   try {
     const db = getPool();
-    const violations = await evaluateViolations(HOT_TENANT_ID);
+    const violations = await evaluateViolations(req.session.user.tenant_id);
     const { rows: svcs } = await db.query(
       `SELECT s.*, w.name AS workspace_name FROM services s
        LEFT JOIN workspaces w ON w.id = s.workspace_id
        WHERE s.tenant_id = $1 AND s.archived = FALSE ORDER BY s.name`,
-      [HOT_TENANT_ID]
+      [req.session.user.tenant_id]
     );
     res.setHeader("Content-Disposition",
       `attachment; filename="governance-${new Date().toISOString().slice(0, 10)}.json"`);

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { Issuer, generators } from "openid-client";
 import { readFileSync } from "fs";
 import { recordAudit } from "../auditLog.js";
+import { resolveTenantForUser } from "../db.js";
 
 export const authRouter = Router();
 
@@ -57,12 +58,14 @@ authRouter.get("/callback", async (req, res) => {
       nonce: req.session.oidcNonce,
     });
     const claims = tokenSet.claims();
+    const tenant_id = await resolveTenantForUser(claims.sub);
     req.session.user = {
       sub:      claims.sub,
       name:     claims.name || claims.preferred_username,
       username: claims.preferred_username,
       email:    claims.email || "",
       roles:    claims.realm_access?.roles?.filter((r) => !r.startsWith("default-")) ?? [],
+      tenant_id,
     };
     req.session.idToken = tokenSet.id_token;
     delete req.session.oidcState;

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPool, HOT_TENANT_ID } from "../db.js";
+import { getPool } from "../db.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
 
@@ -7,14 +7,14 @@ export const dependenciesRouter = Router();
 
 // ── Full graph ───────────────────────────────────────────────────────────────
 // Returns all services as nodes + all dependency edges
-dependenciesRouter.get("/graph", requireRole("viewer"), async (_req, res) => {
+dependenciesRouter.get("/graph", requireRole("viewer"), async (req, res) => {
   try {
     const pool = getPool();
     const { rows: services } = await pool.query(
       `SELECT id, name, slug, category, status, workspace_id, runtime_type, archived
        FROM services WHERE tenant_id = $1 AND archived = FALSE
        ORDER BY name`,
-      [HOT_TENANT_ID]
+      [req.session.user.tenant_id]
     );
     const { rows: edges } = await pool.query(
       `SELECT sd.id, sd.upstream_id, sd.downstream_id, sd.dep_type, sd.notes,
@@ -24,7 +24,7 @@ dependenciesRouter.get("/graph", requireRole("viewer"), async (_req, res) => {
        JOIN services u ON u.id = sd.upstream_id
        JOIN services d ON d.id = sd.downstream_id
        WHERE sd.tenant_id = $1`,
-      [HOT_TENANT_ID]
+      [req.session.user.tenant_id]
     );
     res.json({ ok: true, nodes: services, edges });
   } catch (err) {
@@ -42,7 +42,7 @@ dependenciesRouter.get("/blast-radius/:id", requireRole("viewer"), async (req, r
     // Verify service belongs to tenant
     const { rows: svc } = await pool.query(
       "SELECT id, name, slug FROM services WHERE id = $1 AND tenant_id = $2",
-      [id, HOT_TENANT_ID]
+      [id, req.session.user.tenant_id]
     );
     if (!svc[0]) return res.status(404).json({ ok: false, error: "Service not found" });
 
@@ -59,7 +59,7 @@ dependenciesRouter.get("/blast-radius/:id", requireRole("viewer"), async (req, r
          FROM service_dependencies sd
          JOIN services s ON s.id = sd.downstream_id
          WHERE sd.upstream_id = $1 AND sd.tenant_id = $2`,
-        [current.id, HOT_TENANT_ID]
+        [current.id, req.session.user.tenant_id]
       );
       for (const dep of deps) {
         if (!visited.has(dep.id)) {
@@ -91,7 +91,7 @@ dependenciesRouter.get("/restore-chain/:id", requireRole("viewer"), async (req, 
 
     const { rows: svc } = await pool.query(
       "SELECT id, name, slug FROM services WHERE id = $1 AND tenant_id = $2",
-      [id, HOT_TENANT_ID]
+      [id, req.session.user.tenant_id]
     );
     if (!svc[0]) return res.status(404).json({ ok: false, error: "Service not found" });
 
@@ -107,7 +107,7 @@ dependenciesRouter.get("/restore-chain/:id", requireRole("viewer"), async (req, 
          FROM service_dependencies sd
          JOIN services s ON s.id = sd.upstream_id
          WHERE sd.downstream_id = $1 AND sd.tenant_id = $2`,
-        [cur.id, HOT_TENANT_ID]
+        [cur.id, req.session.user.tenant_id]
       );
       for (const u of ups) {
         if (!seen.has(u.id)) {
@@ -145,14 +145,14 @@ dependenciesRouter.get("/", requireRole("viewer"), async (req, res) => {
            JOIN services d ON d.id = sd.downstream_id
            WHERE sd.tenant_id = $1 AND (sd.upstream_id = $2 OR sd.downstream_id = $2)
            ORDER BY sd.dep_type, u.name`;
-      params = [HOT_TENANT_ID, service_id];
+      params = [req.session.user.tenant_id, service_id];
     } else {
       q = `SELECT sd.*, u.name AS upstream_name, d.name AS downstream_name
            FROM service_dependencies sd
            JOIN services u ON u.id = sd.upstream_id
            JOIN services d ON d.id = sd.downstream_id
            WHERE sd.tenant_id = $1 ORDER BY u.name, d.name`;
-      params = [HOT_TENANT_ID];
+      params = [req.session.user.tenant_id];
     }
 
     const { rows } = await pool.query(q, params);
@@ -178,7 +178,7 @@ dependenciesRouter.post("/", requireRole("operator"), async (req, res) => {
     // Verify both service IDs belong to this tenant before creating the edge
     const { rows: svcCheck } = await pool.query(
       "SELECT id FROM services WHERE id = ANY($1) AND tenant_id = $2",
-      [[upstream_id, downstream_id], HOT_TENANT_ID]
+      [[upstream_id, downstream_id], req.session.user.tenant_id]
     );
     if (svcCheck.length < 2)
       return res.status(404).json({ ok: false, error: "One or both service IDs not found for this tenant" });
@@ -189,7 +189,7 @@ dependenciesRouter.post("/", requireRole("operator"), async (req, res) => {
        ON CONFLICT (tenant_id, upstream_id, downstream_id) DO UPDATE
          SET dep_type = EXCLUDED.dep_type, notes = EXCLUDED.notes
        RETURNING *`,
-      [HOT_TENANT_ID, upstream_id, downstream_id, dep_type, notes ?? null,
+      [req.session.user.tenant_id, upstream_id, downstream_id, dep_type, notes ?? null,
        req.session?.user?.username || "operator"]
     );
     recordAudit(req, "dependency.create", `${upstream_id}→${downstream_id}`, "success");
@@ -204,7 +204,7 @@ dependenciesRouter.delete("/:id", requireRole("operator"), async (req, res) => {
   try {
     const { rows } = await getPool().query(
       "DELETE FROM service_dependencies WHERE id = $1 AND tenant_id = $2 RETURNING id",
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     if (!rows[0]) return res.status(404).json({ ok: false, error: "Not found" });
     recordAudit(req, "dependency.delete", req.params.id, "success");

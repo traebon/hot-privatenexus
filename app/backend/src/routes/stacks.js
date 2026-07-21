@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { getDocker } from "../dockerClient.js";
 import { requireRole } from "../middleware/requireRole.js";
-import { getPool, HOT_TENANT_ID } from "../db.js";
+import { getPool } from "../db.js";
 
 export const stacksRouter = Router();
 
@@ -42,13 +42,13 @@ function formatContainer(c, registryByName) {
 }
 
 // GET /api/stacks — all containers grouped by compose project
-stacksRouter.get("/", requireRole("viewer"), async (_req, res) => {
+stacksRouter.get("/", requireRole("viewer"), async (req, res) => {
   try {
     const [raw, registryRows] = await Promise.all([
       docker.listContainers({ all: true }),
       getPool().query(
         "SELECT id, name, container_name FROM services WHERE tenant_id = $1 AND container_name IS NOT NULL AND archived = FALSE",
-        [HOT_TENANT_ID]
+        [req.session.user.tenant_id]
       ),
     ]);
     const registryByName = new Map(registryRows.rows.map((r) => [r.container_name, r]));

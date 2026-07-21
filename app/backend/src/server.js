@@ -29,7 +29,8 @@ import { recoveryRouter }    from "./routes/recovery.js";
 import { intelligenceRouter }from "./routes/intelligence.js";
 import { requireAuth }       from "./middleware/requireAuth.js";
 import { requireRole }       from "./middleware/requireRole.js";
-import { initDb }            from "./db.js";
+import { tenantsRouter }     from "./routes/tenants.js";
+import { initDb, HOT_TENANT_ID, resolveTenantForUser } from "./db.js";
 import { startHealthScheduler } from "./healthScheduler.js";
 
 const app  = express();
@@ -127,6 +128,10 @@ app.use((req, _res, next) => {
       username: "mcp-server",
       name: "mcp-server",
       roles: ["operator"],
+      // MCP (JARVIS) always operates against the House of Trae tenant — it has
+      // no Keycloak identity of its own to resolve a membership for, and there's
+      // no legitimate case today for an MCP client acting on another tenant.
+      tenant_id: HOT_TENANT_ID,
     };
   }
   next();
@@ -147,6 +152,22 @@ app.use("/api", (req, res, next) => {
   return requireAuth(req, res, next);
 });
 
+// Backfill tenant_id for sessions created before dynamic tenant resolution
+// existed (pre-deploy sessions still alive within the 8h cookie TTL). New
+// logins already get tenant_id from auth.js; this only covers the transition
+// window and is a no-op once those sessions expire.
+app.use("/api", async (req, res, next) => {
+  if (req.session?.user && !req.session.user.tenant_id) {
+    try {
+      req.session.user.tenant_id = await resolveTenantForUser(req.session.user.sub);
+    } catch (err) {
+      console.error("[tenant-backfill] error:", err.message);
+      return res.status(500).json({ error: "Service unavailable" });
+    }
+  }
+  next();
+});
+
 app.use("/api/apps",          appsRouter);
 app.use("/api/stacks",        stacksRouter);
 app.use("/api/admin",         adminRouter);
@@ -165,6 +186,7 @@ app.use("/api/dependencies",  dependenciesRouter);
 app.use("/api/governance",    governanceRouter);
 app.use("/api/recovery",      recoveryRouter);
 app.use("/api/intelligence",  intelligenceRouter);
+app.use("/api/tenants",       requireRole("superadmin"), tenantsRouter);
 
 app.listen(port, () => console.log(`PrivateNexus backend listening on ${port}`));
 

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPool, HOT_TENANT_ID } from "../db.js";
+import { getPool } from "../db.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
 import { recordChange } from "./governance.js";
@@ -167,21 +167,22 @@ async function buildRestoreChain(pool, tenantId, seedIds) {
 }
 
 // ── GET /api/recovery/readiness ──────────────────────────────────────────────
-recoveryRouter.get("/readiness", requireRole("viewer"), async (_req, res) => {
+recoveryRouter.get("/readiness", requireRole("viewer"), async (req, res) => {
   try {
     const pool = getPool();
+    const tenantId = req.session.user.tenant_id;
     const { rows: services } = await pool.query(
       `SELECT s.*, w.name AS workspace_name FROM services s
        LEFT JOIN workspaces w ON w.id = s.workspace_id
        WHERE s.tenant_id = $1 AND s.archived = FALSE ORDER BY s.category, s.name`,
-      [HOT_TENANT_ID]
+      [tenantId]
     );
     if (!services.length) {
       return res.json({ ok: true, services: [], summary: { recoverable: 0, at_risk: 0, unproven: 0, blocked: 0, total: 0, avg_score: 0 } });
     }
 
     const ids = services.map(s => s.id);
-    const { backupsByService, testsByService, depCountByService } = await loadServiceData(pool, HOT_TENANT_ID, ids);
+    const { backupsByService, testsByService, depCountByService } = await loadServiceData(pool, tenantId, ids);
 
     const rows = services.map(svc => {
       const conf = computeConfidence(svc, backupsByService[svc.id], testsByService[svc.id], depCountByService[svc.id]);
@@ -212,10 +213,10 @@ recoveryRouter.get("/confidence/:id", requireRole("viewer"), async (req, res) =>
     const { rows: [svc] } = await pool.query(
       `SELECT s.*, w.name AS workspace_name FROM services s LEFT JOIN workspaces w ON w.id = s.workspace_id
        WHERE s.id = $1 AND s.tenant_id = $2`,
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     if (!svc) return res.status(404).json({ ok: false, error: "Service not found" });
-    const { backupsByService, testsByService, depCountByService } = await loadServiceData(pool, HOT_TENANT_ID, [svc.id]);
+    const { backupsByService, testsByService, depCountByService } = await loadServiceData(pool, req.session.user.tenant_id, [svc.id]);
     const conf = computeConfidence(svc, backupsByService[svc.id], testsByService[svc.id], depCountByService[svc.id]);
     res.json({ ok: true, service: { id: svc.id, name: svc.name, slug: svc.slug }, ...conf });
   } catch (err) {
@@ -225,17 +226,17 @@ recoveryRouter.get("/confidence/:id", requireRole("viewer"), async (req, res) =>
 });
 
 // ── GET /api/recovery/gaps ───────────────────────────────────────────────────
-recoveryRouter.get("/gaps", requireRole("viewer"), async (_req, res) => {
+recoveryRouter.get("/gaps", requireRole("viewer"), async (req, res) => {
   try {
     const pool = getPool();
     const { rows: services } = await pool.query(
       `SELECT s.*, w.name AS workspace_name FROM services s LEFT JOIN workspaces w ON w.id = s.workspace_id
        WHERE s.tenant_id = $1 AND s.archived = FALSE ORDER BY s.name`,
-      [HOT_TENANT_ID]
+      [req.session.user.tenant_id]
     );
     if (!services.length) return res.json({ ok: true, gaps: [], total: 0 });
 
-    const { backupsByService, testsByService, depCountByService } = await loadServiceData(pool, HOT_TENANT_ID, services.map(s => s.id));
+    const { backupsByService, testsByService, depCountByService } = await loadServiceData(pool, req.session.user.tenant_id, services.map(s => s.id));
 
     const gaps = [];
     for (const svc of services) {
@@ -282,19 +283,20 @@ recoveryRouter.post("/simulate", requireRole("operator"), async (req, res) => {
 
   try {
     const pool = getPool();
+    const tenantId = req.session.user.tenant_id;
     let targetServices = [];
 
     if (target_type === "service") {
       const { rows: [svc] } = await pool.query(
         "SELECT * FROM services WHERE id = $1 AND tenant_id = $2 AND archived = FALSE",
-        [target_id, HOT_TENANT_ID]
+        [target_id, tenantId]
       );
       if (!svc) return res.status(404).json({ ok: false, error: "Service not found" });
       targetServices = [svc];
     } else if (target_type === "workspace") {
       const { rows } = await pool.query(
         "SELECT * FROM services WHERE workspace_id = $1 AND tenant_id = $2 AND archived = FALSE ORDER BY name",
-        [target_id, HOT_TENANT_ID]
+        [target_id, tenantId]
       );
       if (!rows.length) return res.status(404).json({ ok: false, error: "No active services in workspace" });
       targetServices = rows;
@@ -304,10 +306,10 @@ recoveryRouter.post("/simulate", requireRole("operator"), async (req, res) => {
 
     // Build restore chain from all target services upwards
     const seedIds = targetServices.map(s => s.id);
-    const { seenIds, extraSteps } = await buildRestoreChain(pool, HOT_TENANT_ID, seedIds);
+    const { seenIds, extraSteps } = await buildRestoreChain(pool, tenantId, seedIds);
 
     const allIds = [...seenIds];
-    const { backupsByService, testsByService, depCountByService } = await loadServiceData(pool, HOT_TENANT_ID, allIds);
+    const { backupsByService, testsByService, depCountByService } = await loadServiceData(pool, tenantId, allIds);
 
     // Build combined service map: targets at order 0, deps at order > 0
     const allSvcs = new Map();
@@ -370,7 +372,7 @@ recoveryRouter.post("/simulate", requireRole("operator"), async (req, res) => {
     const { rows: [simRow] } = await pool.query(
       `INSERT INTO recovery_simulations (tenant_id, scenario_type, target_type, target_id, target_name, run_by, result)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-      [HOT_TENANT_ID, scenario_type, target_type, target_id,
+      [tenantId, scenario_type, target_type, target_id,
        targetServices.map(s => s.name).join(", "), actor, JSON.stringify(result)]
     );
     recordAudit(req, "recovery.simulate", `${scenario_type}:${target_id}`, "success");
@@ -389,15 +391,16 @@ recoveryRouter.post("/playbook", requireRole("viewer"), async (req, res) => {
 
   try {
     const pool = getPool();
+    const tenantId = req.session.user.tenant_id;
     const { rows: [svc] } = await pool.query(
       "SELECT * FROM services WHERE id = $1 AND tenant_id = $2 AND archived = FALSE",
-      [service_id, HOT_TENANT_ID]
+      [service_id, tenantId]
     );
     if (!svc) return res.status(404).json({ ok: false, error: "Service not found" });
 
-    const { seenIds, extraSteps } = await buildRestoreChain(pool, HOT_TENANT_ID, [svc.id]);
+    const { seenIds, extraSteps } = await buildRestoreChain(pool, tenantId, [svc.id]);
     const allIds = [...seenIds];
-    const { backupsByService, testsByService } = await loadServiceData(pool, HOT_TENANT_ID, allIds);
+    const { backupsByService, testsByService } = await loadServiceData(pool, tenantId, allIds);
 
     const allSvcs = new Map([[svc.id, { ...svc, restore_order: 0, is_target: true }]]);
     for (const [id, s] of extraSteps) allSvcs.set(id, s);
@@ -473,13 +476,13 @@ recoveryRouter.post("/playbook", requireRole("viewer"), async (req, res) => {
 });
 
 // ── Simulation history ───────────────────────────────────────────────────────
-recoveryRouter.get("/simulations", requireRole("viewer"), async (_req, res) => {
+recoveryRouter.get("/simulations", requireRole("viewer"), async (req, res) => {
   try {
     const { rows } = await getPool().query(
       `SELECT id, scenario_type, target_type, target_name, run_by,
               result->'summary' AS summary, created_at
        FROM recovery_simulations WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 50`,
-      [HOT_TENANT_ID]
+      [req.session.user.tenant_id]
     );
     res.json({ ok: true, simulations: rows });
   } catch (err) {
@@ -492,7 +495,7 @@ recoveryRouter.get("/simulations/:id", requireRole("viewer"), async (req, res) =
   try {
     const { rows: [sim] } = await getPool().query(
       "SELECT * FROM recovery_simulations WHERE id = $1 AND tenant_id = $2",
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     if (!sim) return res.status(404).json({ ok: false, error: "Not found" });
     res.json({ ok: true, simulation: { ...sim, result: sim.result } });
@@ -506,7 +509,7 @@ recoveryRouter.delete("/simulations/:id", requireRole("admin"), async (req, res)
   try {
     const { rows: [row] } = await getPool().query(
       "DELETE FROM recovery_simulations WHERE id = $1 AND tenant_id = $2 RETURNING id, scenario_type, target_name",
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     if (!row) return res.status(404).json({ ok: false, error: "Not found" });
     recordAudit(req, "recovery.simulation.delete", row.target_name, "success", { scenario_type: row.scenario_type });
@@ -520,7 +523,7 @@ recoveryRouter.delete("/simulations/:id", requireRole("admin"), async (req, res)
 // ── Restore tests ────────────────────────────────────────────────────────────
 recoveryRouter.get("/restore-tests", requireRole("viewer"), async (req, res) => {
   try {
-    const params = [HOT_TENANT_ID];
+    const params = [req.session.user.tenant_id];
     let where = "rt.tenant_id = $1";
     if (req.query.service_id) { params.push(req.query.service_id); where += ` AND rt.service_id = $${params.length}`; }
     const { rows } = await getPool().query(
@@ -548,16 +551,16 @@ recoveryRouter.post("/restore-tests", requireRole("operator"), async (req, res) 
   try {
     const pool  = getPool();
     const { rows: [svc] } = await pool.query(
-      "SELECT id, name FROM services WHERE id = $1 AND tenant_id = $2", [service_id, HOT_TENANT_ID]
+      "SELECT id, name FROM services WHERE id = $1 AND tenant_id = $2", [service_id, req.session.user.tenant_id]
     );
     if (!svc) return res.status(404).json({ ok: false, error: "Service not found" });
     const actor = req.session?.user?.username || "operator";
     const { rows: [row] } = await pool.query(
       `INSERT INTO restore_tests (tenant_id, service_id, backup_id, tested_by, test_type, outcome, rto_actual_min, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [HOT_TENANT_ID, service_id, backup_id || null, actor, test_type, outcome, rto_actual_min ?? null, notes ?? null]
+      [req.session.user.tenant_id, service_id, backup_id || null, actor, test_type, outcome, rto_actual_min ?? null, notes ?? null]
     );
-    recordChange(HOT_TENANT_ID, service_id, svc.name, "restore_tested", actor,
+    recordChange(req.session.user.tenant_id, service_id, svc.name, "restore_tested", actor,
       `Restore test recorded (${test_type}): ${outcome}`, { test_type, outcome, rto_actual_min });
     recordAudit(req, "recovery.restore_test.create", svc.name, "success");
     res.json({ ok: true, test: row });
@@ -571,7 +574,7 @@ recoveryRouter.delete("/restore-tests/:id", requireRole("admin"), async (req, re
   try {
     const { rows: [row] } = await getPool().query(
       "DELETE FROM restore_tests WHERE id = $1 AND tenant_id = $2 RETURNING id, test_type, outcome",
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     if (!row) return res.status(404).json({ ok: false, error: "Not found" });
     recordAudit(req, "recovery.restore_test.delete", req.params.id, "success", { test_type: row.test_type, outcome: row.outcome });

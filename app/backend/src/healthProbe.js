@@ -1,5 +1,5 @@
 import net from "node:net";
-import { getPool, HOT_TENANT_ID } from "./db.js";
+import { getPool } from "./db.js";
 
 const PROBE_TIMEOUT_MS = Number(process.env.HEALTH_PROBE_TIMEOUT_MS || 8000);
 
@@ -26,7 +26,9 @@ function probeTcp(host, port, timeoutMs) {
 }
 
 /**
- * Probes all non-archived services that have a health_endpoint.
+ * Probes all non-archived services that have a health_endpoint, across every
+ * tenant — this runs on a background timer (healthScheduler.js), not inside
+ * a request, so there is no session to scope a single tenant from.
  * Supports http://, https://, and tcp://host:port endpoints.
  * Updates services.status and writes one health_events row per service.
  * Returns the results array.
@@ -37,9 +39,8 @@ export async function probeAllServices(source = "scheduler") {
   const pool = getPool();
 
   const { rows: services } = await pool.query(
-    `SELECT id, slug, health_endpoint FROM services
-     WHERE tenant_id = $1 AND health_endpoint IS NOT NULL AND archived = FALSE`,
-    [HOT_TENANT_ID]
+    `SELECT id, tenant_id, slug, health_endpoint FROM services
+     WHERE health_endpoint IS NOT NULL AND archived = FALSE`
   );
 
   if (!services.length) return [];
@@ -55,9 +56,9 @@ export async function probeAllServices(source = "scheduler") {
         const port = Number(url.port);
         if (!host || !port) throw new Error("invalid tcp:// endpoint — must be tcp://host:port");
         const { status, latencyMs, error } = await probeTcp(host, port, PROBE_TIMEOUT_MS);
-        return { id: svc.id, slug: svc.slug, status, statusCode: null, latencyMs, error };
+        return { id: svc.id, tenantId: svc.tenant_id, slug: svc.slug, status, statusCode: null, latencyMs, error };
       } catch (err) {
-        return { id: svc.id, slug: svc.slug, status: "down", statusCode: null, latencyMs: Date.now() - start, error: err.message };
+        return { id: svc.id, tenantId: svc.tenant_id, slug: svc.slug, status: "down", statusCode: null, latencyMs: Date.now() - start, error: err.message };
       }
     }
 
@@ -73,10 +74,10 @@ export async function probeAllServices(source = "scheduler") {
       const status = statusCode < 300 ? "healthy"
                    : statusCode < 500 ? "warning"
                    : "degraded";
-      return { id: svc.id, slug: svc.slug, status, statusCode, latencyMs, error: null };
+      return { id: svc.id, tenantId: svc.tenant_id, slug: svc.slug, status, statusCode, latencyMs, error: null };
     } catch (err) {
       return {
-        id: svc.id, slug: svc.slug,
+        id: svc.id, tenantId: svc.tenant_id, slug: svc.slug,
         status: "down",
         statusCode: null,
         latencyMs: Date.now() - start,
@@ -93,13 +94,13 @@ export async function probeAllServices(source = "scheduler") {
       pool.query(
         `UPDATE services SET status = $1, updated_at = NOW()
          WHERE id = $2 AND tenant_id = $3`,
-        [r.status, r.id, HOT_TENANT_ID]
+        [r.status, r.id, r.tenantId]
       ),
       pool.query(
         `INSERT INTO health_events
            (tenant_id, service_id, slug, status, status_code, latency_ms, error, source)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [HOT_TENANT_ID, r.id, r.slug, r.status, r.statusCode ?? null,
+        [r.tenantId, r.id, r.slug, r.status, r.statusCode ?? null,
          r.latencyMs, r.error ?? null, source]
       ),
     ]))

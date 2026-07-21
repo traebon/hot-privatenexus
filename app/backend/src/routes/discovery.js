@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "crypto";
 import { readFileSync } from "fs";
 import https from "node:https";
 import { getDocker } from "../dockerClient.js";
-import { getPool, HOT_TENANT_ID } from "../db.js";
+import { getPool, HOT_TENANT_ID } from "../db.js"; // HOT_TENANT_ID: bootstrap-only fallback for /ingest's static token path
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
 import { recordChange } from "./governance.js";
@@ -94,26 +94,26 @@ function inferHealthEndpoint(ports = [], labels = {}, containerName = "") {
 }
 
 // ── Workspace lookup helper ──────────────────────────────────────────────────
-async function workspaceBySlug(pool, slug) {
+async function workspaceBySlug(pool, slug, tenantId) {
   if (!slug) return null;
   const { rows } = await pool.query(
     "SELECT id FROM workspaces WHERE tenant_id = $1 AND slug = $2 LIMIT 1",
-    [HOT_TENANT_ID, slug]
+    [tenantId, slug]
   );
   return rows[0]?.id ?? null;
 }
 
 // ── Deduplicate: skip candidates already in registry ────────────────────────
-async function knownSlugs(pool) {
+async function knownSlugs(pool, tenantId) {
   const { rows } = await pool.query(
     "SELECT slug FROM services WHERE tenant_id = $1",
-    [HOT_TENANT_ID]
+    [tenantId]
   );
   return new Set(rows.map((r) => r.slug));
 }
 
 // ── Upsert candidate (on slug conflict update discovered_at + raw_data) ──────
-async function upsertCandidate(pool, candidate) {
+async function upsertCandidate(pool, candidate, tenantId) {
   const score = computeCompleteness(candidate);
   const { rows } = await pool.query(
     `INSERT INTO discovery_candidates
@@ -140,7 +140,7 @@ async function upsertCandidate(pool, candidate) {
      WHERE discovery_candidates.status = 'pending'
      RETURNING id`,
     [
-      HOT_TENANT_ID,
+      tenantId,
       candidate.source,
       candidate.host ?? null,
       candidate.raw_name ?? null,
@@ -165,7 +165,7 @@ discoveryRouter.get("/candidates", requireRole("operator"), async (req, res) => 
   try {
     const status = req.query.status || "pending";
     const source = req.query.source || null;
-    const params = [HOT_TENANT_ID, status];
+    const params = [req.session.user.tenant_id, status];
     const sourceClause = source ? `AND source = $${params.push(source)}` : "";
 
     const { rows } = await getPool().query(
@@ -181,7 +181,7 @@ discoveryRouter.get("/candidates", requireRole("operator"), async (req, res) => 
       `SELECT status, COUNT(*)::int AS n
        FROM discovery_candidates WHERE tenant_id = $1
        GROUP BY status`,
-      [HOT_TENANT_ID]
+      [req.session.user.tenant_id]
     );
     const summary = Object.fromEntries(counts.rows.map((r) => [r.status, r.n]));
     res.json({ ok: true, candidates: rows, summary });
@@ -199,17 +199,18 @@ discoveryRouter.post("/scan", requireRole("operator"), async (req, res) => {
       : ["local_docker"];
 
     const pool    = getPool();
-    const known   = await knownSlugs(pool);
+    const tenantId = req.session.user.tenant_id;
+    const known   = await knownSlugs(pool, tenantId);
     const results = { inserted: 0, skipped: 0, errors: [] };
 
     for (const source of sources) {
       try {
         if (source === "local_docker") {
-          await scanLocalDocker(pool, known, results);
+          await scanLocalDocker(pool, known, results, tenantId);
         } else if (source === "proxmox") {
-          await scanProxmox(pool, known, results);
+          await scanProxmox(pool, known, results, tenantId);
         } else if (source === "caddy") {
-          await scanCaddy(pool, known, results);
+          await scanCaddy(pool, known, results, tenantId);
         }
       } catch (err) {
         results.errors.push({ source, error: err.message });
@@ -224,10 +225,10 @@ discoveryRouter.post("/scan", requireRole("operator"), async (req, res) => {
 });
 
 // ── Local Docker scanner ─────────────────────────────────────────────────────
-async function scanLocalDocker(pool, known, results) {
+async function scanLocalDocker(pool, known, results, tenantId) {
   const workspaces = await pool.query(
     "SELECT id, slug FROM workspaces WHERE tenant_id = $1",
-    [HOT_TENANT_ID]
+    [tenantId]
   );
   const wsMap = Object.fromEntries(workspaces.rows.map((w) => [w.slug, w.id]));
 
@@ -267,20 +268,20 @@ async function scanLocalDocker(pool, known, results) {
       },
     };
 
-    const inserted = await upsertCandidate(pool, candidate);
+    const inserted = await upsertCandidate(pool, candidate, tenantId);
     inserted ? results.inserted++ : results.skipped++;
   }
 }
 
 // ── Proxmox scanner ──────────────────────────────────────────────────────────
-async function scanProxmox(pool, known, results) {
+async function scanProxmox(pool, known, results, tenantId) {
   const baseUrl = process.env.PROXMOX_URL || "https://10.10.0.2:8006/api2/json";
   const token   = readSecret("/run/secrets/proxmox_token") ?? process.env.PROXMOX_TOKEN;
 
   if (!token) throw new Error("PROXMOX_TOKEN not configured — add proxmox_token secret");
 
   const headers = { Authorization: `PVEAPIToken=${token}` };
-  const wsId    = await workspaceBySlug(pool, "infrastructure");
+  const wsId    = await workspaceBySlug(pool, "infrastructure", tenantId);
 
   for (const type of ["qemu", "lxc"]) {
     const r = await proxmoxFetch(`${baseUrl}/nodes/pve/${type}`, headers);
@@ -316,14 +317,14 @@ async function scanProxmox(pool, known, results) {
         },
       };
 
-      const inserted = await upsertCandidate(pool, candidate);
+      const inserted = await upsertCandidate(pool, candidate, tenantId);
       inserted ? results.inserted++ : results.skipped++;
     }
   }
 }
 
 // ── Caddy scanner ────────────────────────────────────────────────────────────
-async function scanCaddy(pool, known, results) {
+async function scanCaddy(pool, known, results, tenantId) {
   const adminUrl = process.env.CADDY_ADMIN_URL || "http://10.10.0.1:2019";
 
   const r = await fetch(`${adminUrl}/config/apps/http/servers/srv0/routes`, {
@@ -334,7 +335,7 @@ async function scanCaddy(pool, known, results) {
   const routes = await r.json();
   if (!Array.isArray(routes)) throw new Error("Caddy admin API returned unexpected shape");
 
-  const wsId = await workspaceBySlug(pool, "infrastructure");
+  const wsId = await workspaceBySlug(pool, "infrastructure", tenantId);
 
   for (const route of routes) {
     const hosts = route.match?.[0]?.host || [];
@@ -365,7 +366,7 @@ async function scanCaddy(pool, known, results) {
         raw_data: { host, upstreams, route_id: route["@id"] || null },
       };
 
-      const inserted = await upsertCandidate(pool, candidate);
+      const inserted = await upsertCandidate(pool, candidate, tenantId);
       inserted ? results.inserted++ : results.skipped++;
     }
   }
@@ -382,21 +383,28 @@ discoveryRouter.post("/ingest", async (req, res) => {
     const pool = getPool();
     const hash = hashToken(rawToken);
 
-    // Check agent_tokens table first
+    // Check agent_tokens table first — the token itself determines the tenant
+    // (there's no session here to resolve one from), so this must NOT filter
+    // by a fixed tenant_id or no non-HoT tenant's agent could ever authenticate.
     const { rows: tokenRows } = await pool.query(
-      `SELECT id FROM agent_tokens
-       WHERE tenant_id = $1 AND token_hash = $2 AND revoked = FALSE
+      `SELECT id, tenant_id FROM agent_tokens
+       WHERE token_hash = $1 AND revoked = FALSE
          AND (expires_at IS NULL OR expires_at > NOW())`,
-      [HOT_TENANT_ID, hash]
+      [hash]
     );
 
+    let tenantId;
     if (!tokenRows.length) {
-      // Fallback: static env/secret token (bootstrap only — rotate to DB tokens)
+      // Fallback: static env/secret token (bootstrap only — rotate to DB tokens).
+      // Only ever valid for the House of Trae tenant — there is no per-tenant
+      // static token, by design.
       const staticToken = readSecret("/run/secrets/discovery_agent_token") ?? process.env.DISCOVERY_AGENT_TOKEN;
       if (!staticToken || rawToken !== staticToken) {
         return res.status(401).json({ ok: false, error: "Unauthorized" });
       }
+      tenantId = HOT_TENANT_ID;
     } else {
+      tenantId = tokenRows[0].tenant_id;
       // Update last_used_at
       await pool.query("UPDATE agent_tokens SET last_used_at = NOW() WHERE id = $1", [tokenRows[0].id]);
     }
@@ -410,12 +418,12 @@ discoveryRouter.post("/ingest", async (req, res) => {
       return res.status(400).json({ ok: false, error: `Batch size exceeds limit of ${MAX_CANDIDATES_PER_INGEST}` });
     }
 
-    const known   = await knownSlugs(pool);
+    const known   = await knownSlugs(pool, tenantId);
 
     // T13-5: pre-fetch valid workspace IDs for this tenant so we can null out foreign IDs from agents
     const { rows: wsRows } = await pool.query(
       "SELECT id FROM workspaces WHERE tenant_id = $1",
-      [HOT_TENANT_ID]
+      [tenantId]
     );
     const validWsIds = new Set(wsRows.map(r => r.id));
 
@@ -428,7 +436,7 @@ discoveryRouter.post("/ingest", async (req, res) => {
       // Null out workspace_id from external agents if it doesn't belong to this tenant
       const safeWsId = (c.suggested_workspace_id && validWsIds.has(c.suggested_workspace_id))
         ? c.suggested_workspace_id : null;
-      const row = await upsertCandidate(pool, { ...c, suggested_slug: slug, suggested_workspace_id: safeWsId });
+      const row = await upsertCandidate(pool, { ...c, suggested_slug: slug, suggested_workspace_id: safeWsId }, tenantId);
       row ? inserted++ : skipped++;
     }
 
@@ -440,13 +448,13 @@ discoveryRouter.post("/ingest", async (req, res) => {
 });
 
 // ── GET /api/discovery/agent-tokens ─────────────────────────────────────────
-discoveryRouter.get("/agent-tokens", requireRole("admin"), async (_req, res) => {
+discoveryRouter.get("/agent-tokens", requireRole("admin"), async (req, res) => {
   try {
     const { rows } = await getPool().query(
       `SELECT id, label, expires_at, last_used_at, created_by, created_at, revoked
        FROM agent_tokens WHERE tenant_id = $1
        ORDER BY created_at DESC`,
-      [HOT_TENANT_ID]
+      [req.session.user.tenant_id]
     );
     res.json({ ok: true, tokens: rows });
   } catch (err) {
@@ -469,7 +477,7 @@ discoveryRouter.post("/agent-tokens", requireRole("admin"), async (req, res) => 
     const { rows } = await getPool().query(
       `INSERT INTO agent_tokens (tenant_id, label, token_hash, expires_at, created_by)
        VALUES ($1, $2, $3, $4, $5) RETURNING id, label, expires_at, created_at`,
-      [HOT_TENANT_ID, label.trim(), hash, expires_at, created_by]
+      [req.session.user.tenant_id, label.trim(), hash, expires_at, created_by]
     );
     recordAudit(req, "discovery.agent_token.create", label, "success");
     res.json({ ok: true, token: plaintext, ...rows[0] });
@@ -484,7 +492,7 @@ discoveryRouter.delete("/agent-tokens/:id", requireRole("admin"), async (req, re
     const { rows } = await getPool().query(
       `UPDATE agent_tokens SET revoked = TRUE
        WHERE id = $1 AND tenant_id = $2 RETURNING id, label`,
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     if (!rows[0]) return res.status(404).json({ ok: false, error: "Token not found" });
     recordAudit(req, "discovery.agent_token.revoke", rows[0].label, "success");
@@ -500,11 +508,12 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
   const { id } = req.params;
   const { action, reject_reason, updates } = req.body;
   const pool = getPool();
+  const tenantId = req.session.user.tenant_id;
 
   try {
     const { rows } = await pool.query(
       "SELECT * FROM discovery_candidates WHERE id = $1 AND tenant_id = $2",
-      [id, HOT_TENANT_ID]
+      [id, tenantId]
     );
     if (!rows[0]) return res.status(404).json({ ok: false, error: "Candidate not found" });
     const candidate = rows[0];
@@ -540,7 +549,7 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
       if (updates?.suggested_workspace_id !== undefined && updates.suggested_workspace_id !== null) {
         const { rows: wsCheck } = await pool.query(
           "SELECT id FROM workspaces WHERE id = $1 AND tenant_id = $2",
-          [updates.suggested_workspace_id, HOT_TENANT_ID]
+          [updates.suggested_workspace_id, tenantId]
         );
         if (!wsCheck.length)
           return res.status(404).json({ ok: false, error: "workspace_id not found for this tenant" });
@@ -584,7 +593,7 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
       // Check no slug collision in services
       const existing = await pool.query(
         "SELECT id FROM services WHERE tenant_id = $1 AND slug = $2",
-        [HOT_TENANT_ID, slug]
+        [tenantId, slug]
       );
       if (existing.rows[0]) {
         return res.status(409).json({ ok: false, error: `Service with slug '${slug}' already exists` });
@@ -597,7 +606,7 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'unknown',$12)
          RETURNING id`,
         [
-          HOT_TENANT_ID, wsId, name, slug, description,
+          tenantId, wsId, name, slug, description,
           category, accessMode, runtime,
           req.session?.user?.username || "discovered",
           "none", healthEp, containerName,
@@ -613,7 +622,7 @@ discoveryRouter.patch("/candidates/:id", requireRole("operator"), async (req, re
       );
 
       recordAudit(req, "discovery.candidate.approve", slug, "success", { newServiceId });
-      recordChange(HOT_TENANT_ID, newServiceId, name, "service_registered",
+      recordChange(tenantId, newServiceId, name, "service_registered",
         req.session?.user?.username || "unknown",
         `Service '${name}' promoted from Discovery (slug: ${slug})`);
       return res.json({ ok: true, status: "merged", serviceId: newServiceId });
@@ -631,7 +640,7 @@ discoveryRouter.delete("/candidates/:id", requireRole("admin"), async (req, res)
   try {
     const { rows } = await getPool().query(
       "DELETE FROM discovery_candidates WHERE id = $1 AND tenant_id = $2 RETURNING id",
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     if (!rows[0]) return res.status(404).json({ ok: false, error: "Not found" });
     recordAudit(req, "discovery.candidate.delete", req.params.id, "success");
@@ -650,7 +659,7 @@ discoveryRouter.delete("/candidates/:id", requireRole("admin"), async (req, res)
 // one pathway that's actually automated -- confirmed live, every real
 // candidate in the table is source='docker' or 'system_info', zero are
 // 'local_docker' (nobody had ever clicked the manual "Scan Docker" button).
-discoveryRouter.get("/drift", requireRole("operator"), async (_req, res) => {
+discoveryRouter.get("/drift", requireRole("operator"), async (req, res) => {
   try {
     const pool = getPool();
 
@@ -658,7 +667,7 @@ discoveryRouter.get("/drift", requireRole("operator"), async (_req, res) => {
     const { rows: registered } = await pool.query(
       `SELECT id, slug, name, status FROM services
        WHERE tenant_id = $1 AND runtime_type = 'docker' AND archived = FALSE`,
-      [HOT_TENANT_ID]
+      [req.session.user.tenant_id]
     );
 
     // Latest live-docker discovery batch slugs (either collection pathway)
@@ -666,7 +675,7 @@ discoveryRouter.get("/drift", requireRole("operator"), async (_req, res) => {
       `SELECT suggested_slug FROM discovery_candidates
        WHERE tenant_id = $1 AND source IN ('local_docker', 'docker')
          AND discovered_at > NOW() - INTERVAL '25 hours'`,
-      [HOT_TENANT_ID]
+      [req.session.user.tenant_id]
     );
     const discoveredSlugs = new Set(discovered.map((r) => r.suggested_slug));
 

@@ -1,6 +1,6 @@
 import { probeAllServices } from "./healthProbe.js";
 import { runIntelligenceScan } from "./routes/intelligence.js";
-import { getPool, HOT_TENANT_ID } from "./db.js";
+import { getPool } from "./db.js";
 
 const INTERVAL_MS      = Number(process.env.HEALTH_CHECK_INTERVAL_MS    || 2 * 60 * 1000);
 const RETENTION_DAYS   = Number(process.env.HEALTH_EVENT_RETENTION_DAYS || 30);
@@ -32,19 +32,28 @@ async function runCycle() {
       console.log(`[healthScheduler] ${results.length} services probed in ${elapsed}ms — all healthy`);
     }
 
-    // Prune events older than retention window
+    // Prune events older than retention window, across every tenant — this
+    // is a background job, not scoped to a single tenant's session.
     await getPool().query(
       `DELETE FROM health_events
-       WHERE tenant_id = $1 AND ts < NOW() - INTERVAL '1 day' * $2`,
-      [HOT_TENANT_ID, RETENTION_DAYS]
+       WHERE ts < NOW() - INTERVAL '1 day' * $1`,
+      [RETENTION_DAYS]
     );
 
-    // Intelligence scan on every Nth cycle
+    // Intelligence scan on every Nth cycle — runs once per tenant, since the
+    // scan itself is tenant-scoped (see routes/intelligence.js).
     if (cycleCount % INTEL_EVERY_N === 0) {
       try {
-        const intel = await runIntelligenceScan();
-        if (intel.new_signals > 0 || intel.executed > 0) {
-          console.log(`[intelligence] scan complete — signals: ${intel.new_signals}, proposals: ${intel.new_proposals}, executed: ${intel.executed}`);
+        const { rows: tenants } = await getPool().query("SELECT id FROM tenants");
+        let totalSignals = 0, totalProposals = 0, totalExecuted = 0;
+        for (const t of tenants) {
+          const intel = await runIntelligenceScan(t.id);
+          totalSignals   += intel.new_signals;
+          totalProposals += intel.new_proposals;
+          totalExecuted  += intel.executed;
+        }
+        if (totalSignals > 0 || totalExecuted > 0) {
+          console.log(`[intelligence] scan complete — signals: ${totalSignals}, proposals: ${totalProposals}, executed: ${totalExecuted}`);
         }
       } catch (intelErr) {
         console.error("[intelligence] scan error:", intelErr.message);

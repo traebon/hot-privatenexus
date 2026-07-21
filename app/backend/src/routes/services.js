@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPool, HOT_TENANT_ID } from "../db.js";
+import { getPool } from "../db.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
 import { probeAllServices } from "../healthProbe.js";
@@ -46,7 +46,7 @@ function validate(body) {
 servicesRouter.get("/", requireRole("viewer"), async (req, res) => {
   try {
     const conditions = ["s.tenant_id = $1"];
-    const params = [HOT_TENANT_ID];
+    const params = [req.session.user.tenant_id];
 
     if (req.query.category) {
       params.push(req.query.category);
@@ -103,13 +103,13 @@ servicesRouter.post("/", requireRole("admin"), async (req, res) => {
           access_mode, runtime_type, owner, backup_policy, health_endpoint, recovery_runbook_url)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING *`,
-      [HOT_TENANT_ID, workspace_id || null, name.trim(), slug.trim(),
+      [req.session.user.tenant_id, workspace_id || null, name.trim(), slug.trim(),
        description || null, category, access_url || null, access_mode,
        runtime_type, owner.trim(), backup_policy, health_endpoint || null,
        recovery_runbook_url || null]
     );
     recordAudit(req, "service.create", rows[0].slug, "success");
-    recordChange(HOT_TENANT_ID, rows[0].id, rows[0].name, "service_registered",
+    recordChange(req.session.user.tenant_id, rows[0].id, rows[0].name, "service_registered",
       req.session?.user?.username || "unknown",
       `Service '${rows[0].name}' registered in category '${rows[0].category}'`);
     res.status(201).json(rows[0]);
@@ -150,11 +150,11 @@ servicesRouter.put("/:id", requireRole("admin"), async (req, res) => {
       [workspace_id || null, name.trim(), slug.trim(), description || null,
        category, access_url || null, access_mode, runtime_type, owner.trim(),
        backup_policy, health_endpoint || null, recovery_runbook_url || null,
-       req.params.id, HOT_TENANT_ID]
+       req.params.id, req.session.user.tenant_id]
     );
     if (!rows.length) return res.status(404).json({ error: "Not found" });
     recordAudit(req, "service.update", rows[0].slug, "success");
-    recordChange(HOT_TENANT_ID, rows[0].id, rows[0].name, "service_updated",
+    recordChange(req.session.user.tenant_id, rows[0].id, rows[0].name, "service_updated",
       req.session?.user?.username || "unknown",
       `Service '${rows[0].name}' configuration updated`);
     res.json(rows[0]);
@@ -166,11 +166,11 @@ servicesRouter.put("/:id", requireRole("admin"), async (req, res) => {
 });
 
 // GET /api/services/workspaces — list workspaces for the modal dropdown
-servicesRouter.get("/workspaces", requireRole("viewer"), async (_req, res) => {
+servicesRouter.get("/workspaces", requireRole("viewer"), async (req, res) => {
   try {
     const { rows } = await getPool().query(
       "SELECT id, name, slug FROM workspaces WHERE tenant_id = $1 ORDER BY name",
-      [HOT_TENANT_ID]
+      [req.session.user.tenant_id]
     );
     res.json({ ok: true, workspaces: rows });
   } catch (err) {
@@ -193,7 +193,7 @@ servicesRouter.patch("/:id", requireRole("admin"), async (req, res) => {
   if (!Object.keys(allowed).length) return res.status(400).json({ error: "Nothing to update" });
 
   const sets = Object.keys(allowed).map((k, i) => `${k} = $${i + 1}`);
-  const vals = [...Object.values(allowed), req.params.id, HOT_TENANT_ID];
+  const vals = [...Object.values(allowed), req.params.id, req.session.user.tenant_id];
 
   try {
     const { rows } = await getPool().query(
@@ -233,7 +233,7 @@ servicesRouter.get("/:id/health-history", requireRole("viewer"), async (req, res
        WHERE service_id = $1 AND tenant_id = $2
        ORDER BY ts DESC
        LIMIT $3`,
-      [req.params.id, HOT_TENANT_ID, limit]
+      [req.params.id, req.session.user.tenant_id, limit]
     );
     res.json({ ok: true, events: rows });
   } catch (err) {
@@ -282,7 +282,7 @@ servicesRouter.get("/:id/backups", requireRole("viewer"), async (req, res) => {
        FROM service_backups
        WHERE service_id = $1 AND tenant_id = $2
        ORDER BY taken_at DESC`,
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     res.json({ ok: true, backups: rows, score: computeRecoveryScore(rows) });
   } catch (err) {
@@ -306,7 +306,7 @@ servicesRouter.post("/:id/backups", requireRole("operator"), async (req, res) =>
          (tenant_id, service_id, label, backup_type, trust_state, location, taken_at, size_bytes, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [HOT_TENANT_ID, req.params.id, label.trim(),
+      [req.session.user.tenant_id, req.params.id, label.trim(),
        backup_type || "manual", trust_state || "unknown",
        location || null, taken_at ? new Date(taken_at) : new Date(),
        size_bytes ? Number(size_bytes) : null, notes || null]
@@ -332,7 +332,7 @@ servicesRouter.patch("/:id/backups/:backupId", requireRole("operator"), async (r
   if (label      !== undefined) { vals.push(label?.trim()); sets.push(`label = $${vals.length}`); }
   if (!sets.length) return res.status(400).json({ ok: false, error: "Nothing to update" });
 
-  vals.push(req.params.backupId, HOT_TENANT_ID);
+  vals.push(req.params.backupId, req.session.user.tenant_id);
   try {
     const { rows } = await getPool().query(
       `UPDATE service_backups SET ${sets.join(", ")} WHERE id = $${vals.length - 1} AND tenant_id = $${vals.length} RETURNING *`,
@@ -352,7 +352,7 @@ servicesRouter.delete("/:id/backups/:backupId", requireRole("admin"), async (req
   try {
     const { rowCount } = await getPool().query(
       "DELETE FROM service_backups WHERE id = $1 AND tenant_id = $2",
-      [req.params.backupId, HOT_TENANT_ID]
+      [req.params.backupId, req.session.user.tenant_id]
     );
     if (!rowCount) return res.status(404).json({ ok: false, error: "Not found" });
     recordAudit(req, "service_backup.delete", req.params.id, "success", { backupId: req.params.backupId });
@@ -372,7 +372,7 @@ servicesRouter.post("/workspaces", requireRole("admin"), async (req, res) => {
   try {
     const { rows } = await getPool().query(
       "INSERT INTO workspaces (tenant_id, name, slug) VALUES ($1, $2, $3) RETURNING id, name, slug",
-      [HOT_TENANT_ID, name.trim(), slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-")]
+      [req.session.user.tenant_id, name.trim(), slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-")]
     );
     recordAudit(req, "workspace.create", rows[0].slug, "success");
     res.status(201).json({ ok: true, workspace: rows[0] });
@@ -390,7 +390,7 @@ servicesRouter.patch("/workspaces/:id", requireRole("admin"), async (req, res) =
   try {
     const { rows } = await getPool().query(
       "UPDATE workspaces SET name=$1, slug=$2 WHERE id=$3 AND tenant_id=$4 RETURNING id, name, slug",
-      [name.trim(), (slug || name).trim().toLowerCase().replace(/[^a-z0-9-]/g, "-"), req.params.id, HOT_TENANT_ID]
+      [name.trim(), (slug || name).trim().toLowerCase().replace(/[^a-z0-9-]/g, "-"), req.params.id, req.session.user.tenant_id]
     );
     if (!rows.length) return res.status(404).json({ ok: false, error: "Not found" });
     recordAudit(req, "workspace.update", rows[0].slug, "success");
@@ -408,11 +408,11 @@ servicesRouter.delete("/workspaces/:id", requireRole("admin"), async (req, res) 
     // Reassign any services in this workspace to null first
     const { rowCount: reassigned } = await getPool().query(
       "UPDATE services SET workspace_id=NULL WHERE workspace_id=$1 AND tenant_id=$2",
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     const { rows } = await getPool().query(
       "DELETE FROM workspaces WHERE id=$1 AND tenant_id=$2 RETURNING slug",
-      [req.params.id, HOT_TENANT_ID]
+      [req.params.id, req.session.user.tenant_id]
     );
     if (!rows.length) return res.status(404).json({ ok: false, error: "Not found" });
     recordAudit(req, "workspace.delete", rows[0].slug, "success", { servicesReassigned: reassigned });
