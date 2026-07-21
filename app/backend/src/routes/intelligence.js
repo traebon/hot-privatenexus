@@ -199,10 +199,16 @@ export async function runIntelligenceScan() {
     [HOT_TENANT_ID, ids]
   );
 
-  // Existing open signals — to avoid duplicates
+  // Existing open signals — to avoid duplicates. Must NOT bound by fired_at: a
+  // signal is open for as long as resolved_at is NULL, however long that takes:
+  // a `fired_at > NOW() - INTERVAL '1 hour'` cutoff here previously caused any
+  // signal whose underlying condition outlasted an hour (e.g. Proxmox down for
+  // the multi-day bare-metal outage) to silently drop out of openSet on the next
+  // scan and get re-fired as "new" indefinitely, flooding intelligence_signals
+  // and remediation_proposals with duplicates of the same persistent condition.
   const { rows: openSigs } = await pool.query(
     `SELECT service_id, signal_type FROM intelligence_signals
-     WHERE tenant_id=$1 AND resolved_at IS NULL AND fired_at > NOW() - INTERVAL '1 hour'`,
+     WHERE tenant_id=$1 AND resolved_at IS NULL`,
     [HOT_TENANT_ID]
   );
   const openSet = new Set(openSigs.map(s => `${s.service_id}:${s.signal_type}`));
@@ -261,11 +267,15 @@ export async function runIntelligenceScan() {
       if (actionType === "health.refresh" && !svc.health_endpoint) continue;
       if (actionType === "container.restart" && !svc.container_name) continue;
 
-      // Check no pending proposal already exists
+      // Check no pending proposal already exists. Same class of bug as the
+      // openSet query above: a proposed_at time bound here would let a still-
+      // pending (just unreviewed for a while) proposal get silently duplicated
+      // the next time its signal legitimately re-fires — pending/approved means
+      // open regardless of age, matching what this comment already promises.
       const { rows: existingProp } = await pool.query(
         `SELECT id FROM remediation_proposals
          WHERE tenant_id=$1 AND service_id=$2 AND action_type=$3
-           AND status IN ('pending','approved') AND proposed_at > NOW() - INTERVAL '2 hours'`,
+           AND status IN ('pending','approved')`,
         [HOT_TENANT_ID, svc.id, actionType]
       );
       if (existingProp.length) continue;
