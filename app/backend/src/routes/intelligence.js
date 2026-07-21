@@ -374,7 +374,68 @@ export async function runIntelligenceScan() {
     }
   }
 
+  const auditResult = await detectAuditAnomalies(pool);
+  newSignals += auditResult.newSignals;
+
   return { new_signals: newSignals, new_proposals: newProposals, executed };
+}
+
+// ── Audit anomaly detection ──────────────────────────────────────────────────
+// Not tied to any service (service_id stays NULL, service_name holds the
+// source IP) -- this flags a pattern in login activity against the platform
+// itself, not a specific service's health, so it doesn't fit the per-service
+// loop above. No matching action_hint/remediation-proposal path either: there
+// is no automated fix for "someone is guessing passwords" the way there is
+// for a slow health check, so this is signal-only, for a human to review.
+async function detectAuditAnomalies(pool) {
+  const WINDOW_MINUTES = 30;
+  const THRESHOLD = 5;
+
+  const { rows: bursts } = await pool.query(
+    `SELECT ip, count(*)::int AS n, max(ts) AS last_attempt
+     FROM audit_log
+     WHERE tenant_id=$1 AND action='auth.login' AND outcome='failure'
+       AND ip IS NOT NULL AND ts > NOW() - INTERVAL '${WINDOW_MINUTES} minutes'
+     GROUP BY ip
+     HAVING count(*) >= $2`,
+    [HOT_TENANT_ID, THRESHOLD]
+  );
+
+  const { rows: openBursts } = await pool.query(
+    `SELECT id, service_name AS ip FROM intelligence_signals
+     WHERE tenant_id=$1 AND signal_type='auth_failure_burst' AND resolved_at IS NULL`,
+    [HOT_TENANT_ID]
+  );
+  const openIpSet = new Set(openBursts.map(r => r.ip));
+
+  let newSignals = 0;
+  for (const b of bursts) {
+    if (openIpSet.has(b.ip)) continue; // already flagged and still open
+    const severity = b.n >= 10 ? "critical" : "warning";
+    await pool.query(
+      `INSERT INTO intelligence_signals (tenant_id, service_id, service_name, signal_type, severity, detail)
+       VALUES ($1, NULL, $2, 'auth_failure_burst', $3, $4)`,
+      [
+        HOT_TENANT_ID, b.ip, severity,
+        `${b.n} failed login attempts from this IP in the last ${WINDOW_MINUTES} minutes (latest: ${new Date(b.last_attempt).toISOString()})`,
+      ]
+    );
+    newSignals++;
+  }
+
+  // Auto-resolve bursts whose IP has gone quiet for a full window
+  for (const ob of openBursts) {
+    const { rows: stillActive } = await pool.query(
+      `SELECT 1 FROM audit_log WHERE tenant_id=$1 AND action='auth.login' AND outcome='failure'
+         AND ip=$2 AND ts > NOW() - INTERVAL '${WINDOW_MINUTES} minutes' LIMIT 1`,
+      [HOT_TENANT_ID, ob.ip]
+    );
+    if (!stillActive.length) {
+      await pool.query(`UPDATE intelligence_signals SET resolved_at=NOW() WHERE id=$1`, [ob.id]);
+    }
+  }
+
+  return { newSignals };
 }
 
 // ── GET /api/intelligence/signals ────────────────────────────────────────────
