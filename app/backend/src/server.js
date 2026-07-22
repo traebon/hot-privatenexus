@@ -7,18 +7,7 @@ import RedisStore from "connect-redis";
 import { createClient } from "redis";
 import { readFileSync } from "fs";
 import { timingSafeEqual } from "crypto";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// Single source of truth for the served version -- package.json is the one
-// version file guaranteed to be inside the image (COPY app/backend/ ./
-// carries it; the root VERSION file used by scripts/install.sh is not).
-// Previously hardcoded here as a literal, manually kept "in sync" with
-// VERSION and package.json by hand across releases -- it drifted (VERSION
-// stuck at 4.0.0, package.json stuck at 2.0.0, this literal alone tracked
-// the real 5.0.0). Read once at startup rather than on every request.
-const PACKAGE_VERSION = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf8")).version;
+import { PACKAGE_VERSION } from "./version.js";
 
 import { authRouter }        from "./routes/auth.js";
 import { appsRouter }        from "./routes/apps.js";

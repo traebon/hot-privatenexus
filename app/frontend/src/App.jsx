@@ -1082,6 +1082,9 @@ function PrivateNexusDashboard({ authUser }) {
   const [usersMgmtData, setUsersMgmtData] = useState(null);
   const [usersMgmtLoading, setUsersMgmtLoading] = useState(false);
   const [backupRunning, setBackupRunning] = useState(false);
+  const [updateCheckData, setUpdateCheckData] = useState(null);
+  const [updateCheckError, setUpdateCheckError] = useState(false);
+  const [updateCheckLoading, setUpdateCheckLoading] = useState(false);
   const [backupRunResult, setBackupRunResult] = useState(null);
 
   // Inventory / Service Registry
@@ -1171,6 +1174,14 @@ function PrivateNexusDashboard({ authUser }) {
     if (adminView === "users") {
       setUsersData(null);
       fetch(`${API_BASE}/api/admin/users`).then(r=>r.json()).then(d=>{ if(d.ok) setUsersData(d); }).catch(()=>{});
+    }
+    if (adminView === "updates" && !updateCheckData) {
+      setUpdateCheckError(false); setUpdateCheckLoading(true);
+      fetch(`${API_BASE}/api/admin/update-check`)
+        .then(r=>r.json())
+        .then(d=>{ if(d.ok) setUpdateCheckData(d); else setUpdateCheckError(true); })
+        .catch(()=>setUpdateCheckError(true))
+        .finally(()=>setUpdateCheckLoading(false));
     }
     if (adminView === "users-manage") {
       setUsersMgmtData(null); setUsersMgmtLoading(true);
@@ -2950,6 +2961,13 @@ function PrivateNexusDashboard({ authUser }) {
           { name: "Keycloak Admin",       onClick: () => window.open("https://auth.house-of-trae.com/admin", "_blank") },
         ])}
       </div>
+      {/* System */}
+      <div>
+        <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-neutral-500">System</div>
+        {renderCards([
+          { name: "Version & Updates",    onClick: () => setAdminView("updates") },
+        ])}
+      </div>
     </div>
   );
 
@@ -3018,6 +3036,81 @@ function PrivateNexusDashboard({ authUser }) {
           <div className="mt-1 text-xs text-neutral-500">Restore jobs run on Proxmox</div>
         </div>
       </div>
+    </div>
+  );
+
+  const updatesPanel = (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-xs uppercase tracking-wider text-cyan-300/80">Admin</div>
+          <div className="text-lg font-semibold">Version & Updates</div>
+        </div>
+        <button onClick={() => setAdminView(null)} className="text-xs text-neutral-400 hover:text-white">← Back</button>
+      </div>
+
+      {updateCheckLoading && !updateCheckData && <div className="text-xs text-neutral-500">Checking GitHub for the latest release…</div>}
+
+      {updateCheckError && (
+        <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 p-3 text-xs text-rose-300">
+          Could not reach GitHub to check for updates. Try again shortly.
+        </div>
+      )}
+
+      {updateCheckData && (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-xl border border-neutral-800 bg-neutral-900/70 p-3">
+              <div className="text-[10px] uppercase tracking-wide text-neutral-500">Running Version</div>
+              <div className="mt-1 font-mono text-sm text-neutral-200">{updateCheckData.currentVersion}</div>
+            </div>
+            <div className="rounded-xl border border-neutral-800 bg-neutral-900/70 p-3">
+              <div className="text-[10px] uppercase tracking-wide text-neutral-500">Latest on GitHub</div>
+              <div className="mt-1 font-mono text-sm text-neutral-200">{updateCheckData.latestVersion}</div>
+            </div>
+          </div>
+
+          <div
+            className={[
+              "rounded-2xl border p-4",
+              updateCheckData.updateAvailable
+                ? "border-amber-400/30 bg-amber-500/10"
+                : "border-emerald-400/30 bg-emerald-500/10",
+            ].join(" ")}
+          >
+            <div className={updateCheckData.updateAvailable ? "font-semibold text-amber-200" : "font-semibold text-emerald-200"}>
+              {updateCheckData.updateAvailable === null
+                ? "Current version isn't a recognized semver — can't compare"
+                : updateCheckData.updateAvailable
+                ? `Update available: v${updateCheckData.latestVersion}`
+                : "Up to date"}
+            </div>
+            {updateCheckData.updateAvailable && (
+              <a href={updateCheckData.releaseUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block text-xs text-amber-300 underline">
+                View release on GitHub →
+              </a>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between text-[10px] text-neutral-600">
+            <span>{updateCheckData.cached ? "cached result" : "checked just now"} · {new Date(updateCheckData.checkedAt).toLocaleTimeString()}</span>
+            <button
+              disabled={updateCheckLoading}
+              onClick={() => {
+                setUpdateCheckLoading(true); setUpdateCheckError(false);
+                fetch(`${API_BASE}/api/admin/update-check?force=true`)
+                  .then(r=>r.json())
+                  .then(d=>{ if(d.ok) setUpdateCheckData(d); else setUpdateCheckError(true); })
+                  .catch(()=>setUpdateCheckError(true))
+                  .finally(()=>setUpdateCheckLoading(false));
+              }}
+              className="text-neutral-400 hover:text-white disabled:opacity-50"
+            >
+              {updateCheckLoading ? "Checking…" : "Check again"}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 
@@ -6558,6 +6651,7 @@ function PrivateNexusDashboard({ authUser }) {
             adminView === "audit"   ? auditPanel   :
             adminView === "certs"   ? certPanel    :
             adminView === "disk"    ? diskPanel    :
+            adminView === "updates" ? updatesPanel :
             adminView === "users"        ? usersPanel      :
             adminView === "users-manage" ? usersMgmtPanel  :
             adminView === "workspaces"    ? workspacesPanel :

@@ -5,10 +5,89 @@ import { getPool } from "../db.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
 import { getDocker } from "../dockerClient.js";
+import { PACKAGE_VERSION } from "../version.js";
 
 export const adminRouter = Router();
 
 const docker = getDocker();
+
+// GET /api/admin/update-check — compares the running version against the
+// highest semver git tag published to the GitHub mirror (traebon/hot-privatenexus).
+// No GitHub Releases exist for this repo (checked directly against the API —
+// releases endpoint returns an empty array), only pushed tags, so this reads
+// /tags rather than /releases/latest. Cached in-memory since GitHub's
+// unauthenticated rate limit is 60 req/hr and this could otherwise be hit on
+// every dashboard load.
+const UPDATE_CHECK_URL   = "https://api.github.com/repos/traebon/hot-privatenexus/tags";
+const UPDATE_CACHE_MS    = 60 * 60 * 1000;
+let updateCheckCache = null; // { data, fetchedAt }
+
+function parseSemver(tag) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(tag);
+  if (!m) return null;
+  return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+}
+
+function compareSemver(a, b) {
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
+async function fetchLatestTag() {
+  const r = await fetch(UPDATE_CHECK_URL, {
+    signal: AbortSignal.timeout(8000),
+    headers: { "User-Agent": "privatenexus-update-check" },
+  });
+  if (!r.ok) throw new Error(`GitHub API returned ${r.status}`);
+  const tags = await r.json();
+  if (!Array.isArray(tags)) throw new Error("Unexpected GitHub API response shape");
+
+  let latest = null;
+  for (const t of tags) {
+    const parsed = parseSemver(t.name);
+    if (!parsed) continue;
+    if (!latest || compareSemver(parsed, latest.parsed) > 0) {
+      latest = { name: t.name, parsed, sha: t.commit?.sha };
+    }
+  }
+  if (!latest) throw new Error("No semver tags found");
+  return latest;
+}
+
+adminRouter.get("/update-check", requireRole("viewer"), async (req, res) => {
+  const force = req.query.force === "true";
+  try {
+    if (!force && updateCheckCache && Date.now() - updateCheckCache.fetchedAt < UPDATE_CACHE_MS) {
+      return res.json({ ok: true, ...updateCheckCache.data, cached: true });
+    }
+
+    const latest = await fetchLatestTag();
+    const current = parseSemver(PACKAGE_VERSION);
+    const updateAvailable = current ? compareSemver(latest.parsed, current) > 0 : null;
+
+    const data = {
+      currentVersion: PACKAGE_VERSION,
+      latestVersion:  latest.name.replace(/^v/, ""),
+      updateAvailable,
+      releaseUrl:     `https://github.com/traebon/hot-privatenexus/releases/tag/${latest.name}`,
+      checkedAt:      new Date().toISOString(),
+    };
+    updateCheckCache = { data, fetchedAt: Date.now() };
+
+    res.json({ ok: true, ...data, cached: false });
+  } catch (err) {
+    console.error("[admin] update-check error:", err.message);
+    // Honest failure -- never report "up to date" when the check itself failed.
+    res.status(502).json({
+      ok: false,
+      currentVersion: PACKAGE_VERSION,
+      error: "Could not reach GitHub to check for updates",
+      checkedAt: new Date().toISOString(),
+    });
+  }
+});
 
 // GET /api/admin/backup — static reference info matching the real, documented
 // backup architecture (main infra CLAUDE.md, "Backup Architecture" section) —
