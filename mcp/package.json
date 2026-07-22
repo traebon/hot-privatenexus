@@ -1,8 +1,8 @@
 {
   "name": "privatenexus-mcp",
-  "version": "2.0.0",
+  "version": "5.0.0",
   "type": "module",
-  "description": "PrivateNexus read-only MCP server for JARVIS",
+  "description": "PrivateNexus MCP server for JARVIS (9 read tools, 6 write tools)",
   "main": "server.js",
   "dependencies": {
     "pg": "^8.11.3"
