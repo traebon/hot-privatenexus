@@ -1,3 +1,5 @@
+import { recordAudit } from "../auditLog.js";
+
 const ROLE_HIERARCHY = ["viewer", "operator", "admin", "superadmin", "breakglass"];
 
 export function requireRole(minRole) {
@@ -11,6 +13,10 @@ export function requireRole(minRole) {
       -1
     );
     if (userLevel >= minLevel) return next();
+    recordAudit(req, "access.forbidden", req.originalUrl, "failure", {
+      method: req.method,
+      required: minRole,
+    });
     res.status(403).json({ error: "Forbidden", required: minRole });
   };
 }
