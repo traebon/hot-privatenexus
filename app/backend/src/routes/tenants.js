@@ -121,10 +121,15 @@ tenantsRouter.get("/:id/settings", async (req, res) => {
 // PATCH /api/tenants/:id/settings — upsert (a tenant with no row yet gets
 // one created on first save)
 tenantsRouter.patch("/:id/settings", async (req, res) => {
-  const { proxmox_url, caddy_admin_url, category_rules, default_category, default_workspace_slug } = req.body || {};
+  const { proxmox_url, caddy_admin_url, category_rules, default_category, default_workspace_slug, catalogue_repo_url } = req.body || {};
 
   if (default_category !== undefined && !VALID_CATEGORIES.includes(default_category)) {
     return res.status(400).json({ ok: false, error: `default_category must be one of: ${VALID_CATEGORIES.join(", ")}` });
+  }
+  if (catalogue_repo_url) {
+    try { new URL(catalogue_repo_url); } catch {
+      return res.status(400).json({ ok: false, error: "catalogue_repo_url must be a valid URL" });
+    }
   }
   if (category_rules !== undefined) {
     if (!Array.isArray(category_rules)) {
@@ -142,14 +147,15 @@ tenantsRouter.patch("/:id/settings", async (req, res) => {
 
   try {
     const { rows } = await getPool().query(
-      `INSERT INTO tenant_settings (tenant_id, proxmox_url, caddy_admin_url, category_rules, default_category, default_workspace_slug)
-       VALUES ($1, $2, $3, COALESCE($4::jsonb, '[]'::jsonb), COALESCE($5, 'app'), COALESCE($6, 'infrastructure'))
+      `INSERT INTO tenant_settings (tenant_id, proxmox_url, caddy_admin_url, category_rules, default_category, default_workspace_slug, catalogue_repo_url)
+       VALUES ($1, $2, $3, COALESCE($4::jsonb, '[]'::jsonb), COALESCE($5, 'app'), COALESCE($6, 'infrastructure'), $7)
        ON CONFLICT (tenant_id) DO UPDATE SET
          proxmox_url            = COALESCE(EXCLUDED.proxmox_url, tenant_settings.proxmox_url),
          caddy_admin_url        = COALESCE(EXCLUDED.caddy_admin_url, tenant_settings.caddy_admin_url),
          category_rules         = CASE WHEN $4::jsonb IS NULL THEN tenant_settings.category_rules ELSE EXCLUDED.category_rules END,
          default_category       = CASE WHEN $5 IS NULL THEN tenant_settings.default_category ELSE EXCLUDED.default_category END,
          default_workspace_slug = CASE WHEN $6 IS NULL THEN tenant_settings.default_workspace_slug ELSE EXCLUDED.default_workspace_slug END,
+         catalogue_repo_url     = COALESCE(EXCLUDED.catalogue_repo_url, tenant_settings.catalogue_repo_url),
          updated_at              = NOW()
        RETURNING *`,
       [
@@ -159,6 +165,7 @@ tenantsRouter.patch("/:id/settings", async (req, res) => {
         category_rules !== undefined ? JSON.stringify(category_rules) : null,
         default_category ?? null,
         default_workspace_slug ?? null,
+        catalogue_repo_url ?? null,
       ]
     );
     recordAudit(req, "tenant.settings.update", req.params.id, "success");

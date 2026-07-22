@@ -58,6 +58,7 @@ export async function getTenantSettings(tenantId) {
     category_rules: [],
     default_category: "app",
     default_workspace_slug: "infrastructure",
+    catalogue_repo_url: null,
   };
 }
 
@@ -132,6 +133,11 @@ export async function initDb() {
       default_workspace_slug  TEXT         NOT NULL DEFAULT 'infrastructure',
       updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW()
     );
+    -- catalogue_repo_url: NULL means "use the bundled default catalogue".
+    -- When set, GET /api/catalogue fetches that URL instead (same JSON
+    -- shape as the bundled repo) — the "point at a self-hosted repository"
+    -- part of the v6.0 Catalogue deliverable.
+    ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS catalogue_repo_url TEXT;
   `);
 
   // Seed House of Trae's settings with the exact values that used to be

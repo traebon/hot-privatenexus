@@ -1133,6 +1133,8 @@ function PrivateNexusDashboard({ authUser }) {
   const [catalogueCategory, setCatalogueCategory] = useState("all");
   const [catalogueSearch, setCatalogueSearch] = useState("");
   const [catalogueLoading, setCatalogueLoading] = useState(false);
+  const [catalogueRepository, setCatalogueRepository] = useState(null);
+  const [catalogueRepoFallback, setCatalogueRepoFallback] = useState(false);
   // Workspace management state
   const [workspacesMgmt, setWorkspacesMgmt] = useState([]);
   const [workspacesMgmtLoading, setWorkspacesMgmtLoading] = useState(false);
@@ -1316,7 +1318,12 @@ function PrivateNexusDashboard({ authUser }) {
     setCatalogueLoading(true);
     fetch(`${API_BASE}/api/catalogue`)
       .then((r) => r.json())
-      .then((d) => { if (d.ok) setCatalogueApps(d.apps); })
+      .then((d) => {
+        if (!d.ok) return;
+        setCatalogueApps(d.apps);
+        setCatalogueRepository(d.repository);
+        setCatalogueRepoFallback(!!d.repository_fallback);
+      })
       .catch(() => {})
       .finally(() => setCatalogueLoading(false));
   }, [activeBoard, API_BASE]);
@@ -6871,6 +6878,18 @@ function PrivateNexusDashboard({ authUser }) {
                     {catalogueApps.length} apps
                   </span>
                 </div>
+                {catalogueRepository && (
+                  <div className="mt-2 flex items-center gap-2 text-[10px] text-neutral-500">
+                    <span>{catalogueRepository.name} · v{catalogueRepository.version}</span>
+                    <span className="text-neutral-700">·</span>
+                    <span>{catalogueRepository.source === "bundled" ? "bundled default" : "custom repository"}</span>
+                    {catalogueRepoFallback && (
+                      <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-amber-300">
+                        custom repo unreachable — showing bundled default
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Search + category filter */}
