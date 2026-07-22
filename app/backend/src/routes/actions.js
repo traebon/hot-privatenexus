@@ -274,34 +274,31 @@ actionsRouter.post("/emergency", requireRole("admin"), async (req, res) => {
     if (action === "maintenance.enable") {
       const VALID_DURATIONS = { "1h": 3600, "4h": 14400, "8h": 28800, "24h": 86400 };
       const rawDuration = req.body.duration;
-      let durationSecs = null;
-      let endsAt = null;
-      if (rawDuration) {
-        durationSecs = VALID_DURATIONS[rawDuration] ?? (Number.isFinite(Number(rawDuration)) ? Math.min(Number(rawDuration), 86400) : null);
-        if (!durationSecs || durationSecs <= 0) {
-          return res.status(400).json({ ok: false, error: "Invalid duration — use 1h, 4h, 8h, 24h, or seconds (max 86400)" });
-        }
-        endsAt = new Date(Date.now() + durationSecs * 1000).toISOString();
+      // Duration is required (PRD ACT-03) -- indefinite maintenance mode was
+      // previously allowed by omitting it entirely, leaving the flag stuck on
+      // with no auto-expiry and no Grafana alert suppression until someone
+      // remembered to call maintenance.disable by hand.
+      if (!rawDuration) {
+        return res.status(400).json({ ok: false, error: "duration is required — use 1h, 4h, 8h, 24h, or seconds (max 86400)" });
       }
+      const durationSecs = VALID_DURATIONS[rawDuration] ?? (Number.isFinite(Number(rawDuration)) ? Math.min(Number(rawDuration), 86400) : null);
+      if (!durationSecs || durationSecs <= 0) {
+        return res.status(400).json({ ok: false, error: "Invalid duration — use 1h, 4h, 8h, 24h, or seconds (max 86400)" });
+      }
+      const endsAt = new Date(Date.now() + durationSecs * 1000).toISOString();
 
       // Suppress Ntfy/email alerts for the window via a Grafana Alerting
       // silence -- Grafana auto-expires it at endsAt, so "resumes on expiry"
-      // needs no PN-side timer of its own. Requires a duration: Grafana
-      // silences can't be open-ended, so indefinite maintenance (no
-      // duration given) honestly reports suppression as unavailable rather
-      // than silently covering only part of the window. Never lets a
-      // Grafana failure block maintenance mode itself -- the display flag
-      // and the alert suppression are reported separately so the UI can't
-      // imply protection that didn't actually happen.
-      const grafanaSilence = endsAt
-        ? await createMaintenanceSilence({ endsAt, reason, createdBy: req.session?.user?.username })
-        : { ok: false, error: "No duration set -- open-ended maintenance cannot suppress alerts (Grafana silences require an end time)" };
+      // needs no PN-side timer of its own. Never lets a Grafana failure
+      // block maintenance mode itself -- the display flag and the alert
+      // suppression are reported separately so the UI can't imply
+      // protection that didn't actually happen.
+      const grafanaSilence = await createMaintenanceSilence({ endsAt, reason, createdBy: req.session?.user?.username });
       if (!grafanaSilence.ok) console.warn("[maintenance] alert suppression unavailable:", grafanaSilence.error);
 
       const state = { enabled: true, since: new Date().toISOString(), reason: reason || null, durationSecs, endsAt, grafanaSilence };
       writeFileSync(MAINTENANCE_FILE, JSON.stringify(state));
-      if (endsAt) scheduleMaintenanceExpiry(endsAt);
-      else clearMaintenanceTimer();
+      scheduleMaintenanceExpiry(endsAt);
       recordAudit(req, "emergency.maintenance.enable", null, "success", { durationSecs, endsAt, alertSuppression: grafanaSilence.ok ? "active" : grafanaSilence.error });
       return res.json({ ok: true, action, maintenanceMode: state });
     }
