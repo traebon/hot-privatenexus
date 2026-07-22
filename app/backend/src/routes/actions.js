@@ -9,6 +9,7 @@ import { recordAudit } from "../auditLog.js";
 import { requireRole, userRole } from "../middleware/requireRole.js";
 import { getPool } from "../db.js";
 import { recordChange } from "./governance.js";
+import { createMaintenanceSilence, deleteMaintenanceSilence } from "../grafana.js";
 
 export const actionsRouter = Router();
 
@@ -282,18 +283,42 @@ actionsRouter.post("/emergency", requireRole("admin"), async (req, res) => {
         }
         endsAt = new Date(Date.now() + durationSecs * 1000).toISOString();
       }
-      const state = { enabled: true, since: new Date().toISOString(), reason: reason || null, durationSecs, endsAt };
+
+      // Suppress Ntfy/email alerts for the window via a Grafana Alerting
+      // silence -- Grafana auto-expires it at endsAt, so "resumes on expiry"
+      // needs no PN-side timer of its own. Requires a duration: Grafana
+      // silences can't be open-ended, so indefinite maintenance (no
+      // duration given) honestly reports suppression as unavailable rather
+      // than silently covering only part of the window. Never lets a
+      // Grafana failure block maintenance mode itself -- the display flag
+      // and the alert suppression are reported separately so the UI can't
+      // imply protection that didn't actually happen.
+      const grafanaSilence = endsAt
+        ? await createMaintenanceSilence({ endsAt, reason, createdBy: req.session?.user?.username })
+        : { ok: false, error: "No duration set -- open-ended maintenance cannot suppress alerts (Grafana silences require an end time)" };
+      if (!grafanaSilence.ok) console.warn("[maintenance] alert suppression unavailable:", grafanaSilence.error);
+
+      const state = { enabled: true, since: new Date().toISOString(), reason: reason || null, durationSecs, endsAt, grafanaSilence };
       writeFileSync(MAINTENANCE_FILE, JSON.stringify(state));
       if (endsAt) scheduleMaintenanceExpiry(endsAt);
       else clearMaintenanceTimer();
-      recordAudit(req, "emergency.maintenance.enable", null, "success", { durationSecs, endsAt });
+      recordAudit(req, "emergency.maintenance.enable", null, "success", { durationSecs, endsAt, alertSuppression: grafanaSilence.ok ? "active" : grafanaSilence.error });
       return res.json({ ok: true, action, maintenanceMode: state });
     }
 
     if (action === "maintenance.disable") {
       clearMaintenanceTimer();
-      if (existsSync(MAINTENANCE_FILE)) rmSync(MAINTENANCE_FILE);
-      recordAudit(req, "emergency.maintenance.disable", null, "success");
+      let priorSilence = null;
+      if (existsSync(MAINTENANCE_FILE)) {
+        try { priorSilence = JSON.parse(readFileSync(MAINTENANCE_FILE, "utf8")).grafanaSilence; } catch {}
+        rmSync(MAINTENANCE_FILE);
+      }
+      let silenceCleared = null;
+      if (priorSilence?.ok && priorSilence.silenceId) {
+        silenceCleared = await deleteMaintenanceSilence(priorSilence.silenceId);
+        if (!silenceCleared.ok) console.warn("[maintenance] failed to clear Grafana silence early:", silenceCleared.error);
+      }
+      recordAudit(req, "emergency.maintenance.disable", null, "success", silenceCleared ? { alertSuppressionCleared: silenceCleared.ok } : undefined);
       return res.json({ ok: true, action, maintenanceMode: null });
     }
 

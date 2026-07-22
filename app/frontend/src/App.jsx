@@ -8418,6 +8418,20 @@ function PrivateNexusDashboard({ authUser }) {
                           <div className="mt-0.5 text-[11px] text-amber-300/60">{emergencyStatus.maintenanceMode.reason}</div>
                         )}
                       </div>
+                      {/* Never let this box go unrendered when suppression failed -- a
+                          silent gap here is exactly the misleading-toggle class of bug
+                          found elsewhere in this app (Emergency board policy enforcement,
+                          the down_spike autonomous-restart toggle). */}
+                      <div className={[
+                        "rounded-lg border px-3 py-2 text-[11px]",
+                        emergencyStatus.maintenanceMode.grafanaSilence?.ok
+                          ? "border-emerald-400/20 bg-emerald-500/5 text-emerald-300/80"
+                          : "border-rose-400/20 bg-rose-500/5 text-rose-300/80",
+                      ].join(" ")}>
+                        {emergencyStatus.maintenanceMode.grafanaSilence?.ok
+                          ? "Ntfy/email alerts suppressed via Grafana silence — resumes automatically on expiry"
+                          : `Alert suppression NOT active — ${emergencyStatus.maintenanceMode.grafanaSilence?.error || "unknown reason"}`}
+                      </div>
                       <button
                         onClick={() => runEmergencyAction("maintenance.disable")}
                         disabled={!!emergencyPending || !can("admin")}

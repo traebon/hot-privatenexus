@@ -91,6 +91,7 @@ services:
       HEALTH_EVENT_RETENTION_DAYS: ${HEALTH_EVENT_RETENTION_DAYS:-30}
       PROXMOX_URL: ${PROXMOX_URL:-https://10.10.0.2:8006/api2/json}
       CADDY_ADMIN_URL: ${CADDY_ADMIN_URL:-http://10.10.0.1:2019}
+      GRAFANA_URL: ${GRAFANA_URL:-https://grafana.house-of-trae.com}
       DOCKER_HOST: tcp://privatenexus-docker-proxy:2375
     secrets:
       - db_password
@@ -101,6 +102,7 @@ services:
       - mcp_token
       - redis_password
       - pdns_api_key
+      - grafana_token
     ports:
       - "127.0.0.1:${PRIVATENEXUS_BACKEND_PORT:-3001}:3001"
     volumes:
@@ -187,6 +189,8 @@ secrets:
     file: ../secrets/session_secret.txt
   proxmox_token:
     file: ../secrets/proxmox_token.txt
+  grafana_token:
+    file: ../secrets/grafana_token.txt
   discovery_agent_token:
     file: ../secrets/discovery_agent_token.txt
   mcp_token:
