@@ -1,6 +1,7 @@
 import express from "express";
 import { readFileSync } from "fs";
 import { requireRole } from "../middleware/requireRole.js";
+import { recordAudit } from "../auditLog.js";
 
 export const dnsRouter = express.Router();
 
@@ -76,6 +77,7 @@ dnsRouter.post("/zones/:zone/records", requireRole("operator"), async (req, res)
     return res.status(400).json({ ok: false, error: "name, type, and records are required" });
   }
   if (LOCKED_RECORD_TYPES.has(type)) {
+    recordAudit(req, "dns.record.create.blocked", `${req.params.zone}/${name}/${type}`, "failure", { reason: "locked record type" });
     return res.status(403).json({ ok: false, error: `${type} records are protected — cannot be created or replaced via this API` });
   }
   const fqdn = name.endsWith(".") ? name : `${name}.`;
@@ -83,8 +85,10 @@ dnsRouter.post("/zones/:zone/records", requireRole("operator"), async (req, res)
     await pdns("PATCH", `/zones/${req.params.zone}`, {
       rrsets: [{ name: fqdn, type, ttl: Number(ttl), changetype: "REPLACE", records }],
     });
+    recordAudit(req, "dns.record.create", `${req.params.zone}/${fqdn}/${type}`, "success", { ttl: Number(ttl), records });
     res.json({ ok: true });
   } catch (err) {
+    recordAudit(req, "dns.record.create", `${req.params.zone}/${fqdn}/${type}`, "failure", { error: err.message });
     res.status(err.status || 502).json({ ok: false, error: err.message });
   }
 });
@@ -95,6 +99,7 @@ dnsRouter.delete("/zones/:zone/records", requireRole("operator"), async (req, re
   const { name, type } = req.body;
   if (!name || !type) return res.status(400).json({ ok: false, error: "name and type are required" });
   if (LOCKED_RECORD_TYPES.has(type)) {
+    recordAudit(req, "dns.record.delete.blocked", `${req.params.zone}/${name}/${type}`, "failure", { reason: "locked record type" });
     return res.status(403).json({ ok: false, error: `${type} records are protected — cannot be deleted via this API` });
   }
   const fqdn = name.endsWith(".") ? name : `${name}.`;
@@ -102,8 +107,10 @@ dnsRouter.delete("/zones/:zone/records", requireRole("operator"), async (req, re
     await pdns("PATCH", `/zones/${req.params.zone}`, {
       rrsets: [{ name: fqdn, type, changetype: "DELETE", records: [] }],
     });
+    recordAudit(req, "dns.record.delete", `${req.params.zone}/${fqdn}/${type}`, "success");
     res.json({ ok: true });
   } catch (err) {
+    recordAudit(req, "dns.record.delete", `${req.params.zone}/${fqdn}/${type}`, "failure", { error: err.message });
     res.status(err.status || 502).json({ ok: false, error: err.message });
   }
 });

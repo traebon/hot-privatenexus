@@ -596,6 +596,7 @@ intelligenceRouter.post("/signals/:id/ack", requireRole("operator"), async (req,
       [actor, req.params.id, req.session.user.tenant_id]
     );
     if (!row) return res.status(404).json({ ok: false, error: "Signal not found" });
+    recordAudit(req, "intelligence.signal.ack", row.signal_type, "success");
     res.json({ ok: true, signal: row });
   } catch (err) {
     console.error("[intelligence] error:", err.message);
@@ -612,6 +613,7 @@ intelligenceRouter.post("/signals/:id/resolve", requireRole("operator"), async (
       [req.params.id, req.session.user.tenant_id]
     );
     if (!row) return res.status(404).json({ ok: false, error: "Signal not found" });
+    recordAudit(req, "intelligence.signal.resolve", row.signal_type, "success");
     res.json({ ok: true, signal: row });
   } catch (err) {
     console.error("[intelligence] error:", err.message);
@@ -683,6 +685,7 @@ intelligenceRouter.post("/proposals/:id/dismiss", requireRole("operator"), async
       [actor, req.params.id, req.session.user.tenant_id]
     );
     if (!row) return res.status(404).json({ ok: false, error: "Not found or not pending" });
+    recordAudit(req, "intelligence.proposal.dismiss", row.service_name, "success");
     res.json({ ok: true });
   } catch (err) {
     console.error("[intelligence] error:", err.message);
