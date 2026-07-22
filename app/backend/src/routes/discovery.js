@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "crypto";
 import { readFileSync } from "fs";
 import https from "node:https";
 import { getDocker } from "../dockerClient.js";
-import { getPool, HOT_TENANT_ID } from "../db.js"; // HOT_TENANT_ID: bootstrap-only fallback for /ingest's static token path
+import { getPool, getTenantSettings, HOT_TENANT_ID } from "../db.js"; // HOT_TENANT_ID: bootstrap-only fallback for /ingest's static token path
 import { requireRole } from "../middleware/requireRole.js";
 import { recordAudit } from "../auditLog.js";
 import { recordChange } from "./governance.js";
@@ -56,20 +56,23 @@ function toSlug(name = "") {
 }
 
 // ── Infer category from image name ──────────────────────────────────────────
-// Output must stay within services.js's VALID_CATEGORIES. "monitoring" and
-// "app" are first-class categories with real live members; database/proxy/
-// security/vcs images fold into "infra" since nothing distinguishes them
-// as their own category yet.
-function inferCategory(image = "") {
+// Rules and the default are per-tenant config (tenant_settings.category_rules/
+// default_category) — previously a hardcoded table tuned to House of Trae's
+// own stack (ERPNext/Keycloak/Forgejo/etc.), which would have silently
+// mis-categorized a second tenant's images against HoT-shaped assumptions.
+// Output must still stay within services.js's VALID_CATEGORIES — that's a
+// platform-level constraint, not something per-tenant config can violate; an
+// invalid rule just never matches usefully rather than crashing anything.
+function inferCategory(image = "", categoryRules = [], defaultCategory = "app") {
   const img = image.toLowerCase();
-  if (/postgres|mariadb|mysql|redis|mongo/.test(img)) return "infra";
-  if (/nginx|caddy|traefik|apache/.test(img))          return "infra";
-  if (/grafana|prometheus|loki|uptime/.test(img))      return "monitoring";
-  if (/keycloak|vault|authelia/.test(img))              return "infra";
-  if (/forgejo|gitea|gitlab/.test(img))                 return "infra";
-  if (/nextcloud|immich|vaultwarden/.test(img))         return "personal";
-  if (/erpnext|frappe/.test(img))                       return "business";
-  return "app";
+  for (const rule of categoryRules) {
+    try {
+      if (new RegExp(rule.pattern, "i").test(img)) return rule.category;
+    } catch {
+      /* malformed regex in a tenant's own config — skip it, don't crash the scan */
+    }
+  }
+  return defaultCategory;
 }
 
 // ── Infer health endpoint from container port bindings ──────────────────────
@@ -231,6 +234,7 @@ async function scanLocalDocker(pool, known, results, tenantId) {
     [tenantId]
   );
   const wsMap = Object.fromEntries(workspaces.rows.map((w) => [w.slug, w.id]));
+  const settings = await getTenantSettings(tenantId);
 
   const containers = await docker.listContainers({ all: false });
 
@@ -253,7 +257,7 @@ async function scanLocalDocker(pool, known, results, tenantId) {
       suggested_name:        labels["pn.name"]        || rawName,
       suggested_description: labels["pn.description"] || null,
       suggested_workspace_id: wsId,
-      suggested_category:    labels["pn.category"]    || inferCategory(c.Image),
+      suggested_category:    labels["pn.category"]    || inferCategory(c.Image, settings.category_rules, settings.default_category),
       suggested_access_mode: labels["pn.access_mode"] || "internal",
       suggested_runtime:     "docker",
       suggested_health_ep:   inferHealthEndpoint(c.Ports, labels, rawName),
@@ -275,13 +279,23 @@ async function scanLocalDocker(pool, known, results, tenantId) {
 
 // ── Proxmox scanner ──────────────────────────────────────────────────────────
 async function scanProxmox(pool, known, results, tenantId) {
-  const baseUrl = process.env.PROXMOX_URL || "https://10.10.0.2:8006/api2/json";
-  const token   = readSecret("/run/secrets/proxmox_token") ?? process.env.PROXMOX_TOKEN;
+  const settings = await getTenantSettings(tenantId);
+  // No silent fallback to HoT's own Proxmox — a tenant with no proxmox_url
+  // configured has nothing to scan, not "scan whatever the env var happens
+  // to default to."
+  if (!settings.proxmox_url) throw new Error("No Proxmox URL configured for this tenant — set it in tenant settings first");
+  const baseUrl = settings.proxmox_url;
+  // Token stays a shared env/secret for now, not yet per-tenant — real
+  // per-tenant secret storage (encryption at rest, not a plaintext DB
+  // column) is a bigger security design question, out of scope for this
+  // pass. Fine while HoT is the only real tenant; revisit before a second
+  // tenant actually needs its own Proxmox scanned.
+  const token = readSecret("/run/secrets/proxmox_token") ?? process.env.PROXMOX_TOKEN;
 
   if (!token) throw new Error("PROXMOX_TOKEN not configured — add proxmox_token secret");
 
   const headers = { Authorization: `PVEAPIToken=${token}` };
-  const wsId    = await workspaceBySlug(pool, "infrastructure", tenantId);
+  const wsId    = await workspaceBySlug(pool, settings.default_workspace_slug, tenantId);
 
   for (const type of ["qemu", "lxc"]) {
     const r = await proxmoxFetch(`${baseUrl}/nodes/pve/${type}`, headers);
@@ -325,17 +339,19 @@ async function scanProxmox(pool, known, results, tenantId) {
 
 // ── Caddy scanner ────────────────────────────────────────────────────────────
 async function scanCaddy(pool, known, results, tenantId) {
-  const adminUrl = process.env.CADDY_ADMIN_URL || "http://10.10.0.1:2019";
+  const settings = await getTenantSettings(tenantId);
+  if (!settings.caddy_admin_url) throw new Error("No Caddy admin URL configured for this tenant — set it in tenant settings first");
+  const adminUrl = settings.caddy_admin_url;
 
   const r = await fetch(`${adminUrl}/config/apps/http/servers/srv0/routes`, {
     signal: AbortSignal.timeout(8000),
   });
-  if (!r.ok) throw new Error(`Caddy admin API: HTTP ${r.status} — is CADDY_ADMIN_URL correct?`);
+  if (!r.ok) throw new Error(`Caddy admin API: HTTP ${r.status} — is the tenant's caddy_admin_url correct?`);
 
   const routes = await r.json();
   if (!Array.isArray(routes)) throw new Error("Caddy admin API returned unexpected shape");
 
-  const wsId = await workspaceBySlug(pool, "infrastructure", tenantId);
+  const wsId = await workspaceBySlug(pool, settings.default_workspace_slug, tenantId);
 
   for (const route of routes) {
     const hosts = route.match?.[0]?.host || [];

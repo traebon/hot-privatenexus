@@ -41,6 +41,26 @@ export async function resolveTenantForUser(userSub) {
   return HOT_TENANT_ID;
 }
 
+// Per-tenant discovery/topology settings (see tenant_settings table below).
+// A tenant with no row yet (e.g. just created, never configured) gets safe
+// empty defaults — proxmox_url/caddy_admin_url null means those scanners
+// simply have nothing to point at yet, not a fallback to HoT's own topology.
+export async function getTenantSettings(tenantId) {
+  const { rows } = await pool.query(
+    "SELECT * FROM tenant_settings WHERE tenant_id = $1",
+    [tenantId]
+  );
+  if (rows.length) return rows[0];
+  return {
+    tenant_id: tenantId,
+    proxmox_url: null,
+    caddy_admin_url: null,
+    category_rules: [],
+    default_category: "app",
+    default_workspace_slug: "infrastructure",
+  };
+}
+
 export async function initDb() {
   pool = new Pool({
     host:     process.env.DB_HOST     || "privatenexus-db",
@@ -94,6 +114,51 @@ export async function initDb() {
       ($1, 'Monitoring',         'monitoring')
     ON CONFLICT (tenant_id, slug) DO NOTHING;
   `, [HOT_TENANT_ID]);
+
+  // Per-tenant discovery/topology config — replaces what used to be hardcoded
+  // HoT-specific defaults (PROXMOX_URL, CADDY_ADMIN_URL env vars, the
+  // inferCategory() image-name table, workspaceBySlug()'s "infrastructure"
+  // default) so a second tenant's discovery scan doesn't silently target or
+  // categorize against House of Trae's own topology. category_rules is an
+  // ordered array of {pattern, category} evaluated as regexes, first match
+  // wins, falling back to default_category.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tenant_settings (
+      tenant_id               UUID         PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+      proxmox_url             TEXT,
+      caddy_admin_url         TEXT,
+      category_rules          JSONB        NOT NULL DEFAULT '[]',
+      default_category        TEXT         NOT NULL DEFAULT 'app',
+      default_workspace_slug  TEXT         NOT NULL DEFAULT 'infrastructure',
+      updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  // Seed House of Trae's settings with the exact values that used to be
+  // hardcoded/env-defaulted, so this migration changes nothing about HoT's
+  // own behavior — only makes it configurable per-tenant going forward.
+  await pool.query(
+    `INSERT INTO tenant_settings
+       (tenant_id, proxmox_url, caddy_admin_url, category_rules, default_category, default_workspace_slug)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+     ON CONFLICT (tenant_id) DO NOTHING`,
+    [
+      HOT_TENANT_ID,
+      "https://10.10.0.2:8006/api2/json",
+      "http://10.10.0.1:2019",
+      JSON.stringify([
+        { pattern: "postgres|mariadb|mysql|redis|mongo", category: "infra" },
+        { pattern: "nginx|caddy|traefik|apache",         category: "infra" },
+        { pattern: "grafana|prometheus|loki|uptime",     category: "monitoring" },
+        { pattern: "keycloak|vault|authelia",            category: "infra" },
+        { pattern: "forgejo|gitea|gitlab",                category: "infra" },
+        { pattern: "nextcloud|immich|vaultwarden",        category: "personal" },
+        { pattern: "erpnext|frappe",                      category: "business" },
+      ]),
+      "app",
+      "infrastructure",
+    ]
+  );
 
   // Audit log — create then patch schema for tenant_id (idempotent)
   await pool.query(`

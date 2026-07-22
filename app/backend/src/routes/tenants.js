@@ -1,6 +1,7 @@
 import { Router } from "express";
-import { getPool } from "../db.js";
+import { getPool, getTenantSettings } from "../db.js";
 import { recordAudit } from "../auditLog.js";
+import { VALID_CATEGORIES } from "./services.js";
 
 export const tenantsRouter = Router();
 
@@ -99,6 +100,71 @@ tenantsRouter.delete("/:id/members/:userSub", async (req, res) => {
     recordAudit(req, "tenant.member_remove", req.params.userSub, "success", { tenant_id: req.params.id });
     res.json({ ok: true });
   } catch (err) {
+    console.error("[tenants] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
+});
+
+// GET /api/tenants/:id/settings — discovery/topology config (Proxmox/Caddy
+// URLs, category inference rules, default workspace). Returns safe empty
+// defaults if the tenant has never configured any of this yet.
+tenantsRouter.get("/:id/settings", async (req, res) => {
+  try {
+    const settings = await getTenantSettings(req.params.id);
+    res.json({ ok: true, settings });
+  } catch (err) {
+    console.error("[tenants] error:", err.message);
+    res.status(500).json({ ok: false, error: "Service unavailable" });
+  }
+});
+
+// PATCH /api/tenants/:id/settings — upsert (a tenant with no row yet gets
+// one created on first save)
+tenantsRouter.patch("/:id/settings", async (req, res) => {
+  const { proxmox_url, caddy_admin_url, category_rules, default_category, default_workspace_slug } = req.body || {};
+
+  if (default_category !== undefined && !VALID_CATEGORIES.includes(default_category)) {
+    return res.status(400).json({ ok: false, error: `default_category must be one of: ${VALID_CATEGORIES.join(", ")}` });
+  }
+  if (category_rules !== undefined) {
+    if (!Array.isArray(category_rules)) {
+      return res.status(400).json({ ok: false, error: "category_rules must be an array of {pattern, category}" });
+    }
+    for (const rule of category_rules) {
+      if (!rule?.pattern || !VALID_CATEGORIES.includes(rule.category)) {
+        return res.status(400).json({ ok: false, error: `every category_rules entry needs a pattern and a category in: ${VALID_CATEGORIES.join(", ")}` });
+      }
+      try { new RegExp(rule.pattern); } catch {
+        return res.status(400).json({ ok: false, error: `invalid regex pattern: ${rule.pattern}` });
+      }
+    }
+  }
+
+  try {
+    const { rows } = await getPool().query(
+      `INSERT INTO tenant_settings (tenant_id, proxmox_url, caddy_admin_url, category_rules, default_category, default_workspace_slug)
+       VALUES ($1, $2, $3, COALESCE($4::jsonb, '[]'::jsonb), COALESCE($5, 'app'), COALESCE($6, 'infrastructure'))
+       ON CONFLICT (tenant_id) DO UPDATE SET
+         proxmox_url            = COALESCE(EXCLUDED.proxmox_url, tenant_settings.proxmox_url),
+         caddy_admin_url        = COALESCE(EXCLUDED.caddy_admin_url, tenant_settings.caddy_admin_url),
+         category_rules         = CASE WHEN $4::jsonb IS NULL THEN tenant_settings.category_rules ELSE EXCLUDED.category_rules END,
+         default_category       = CASE WHEN $5 IS NULL THEN tenant_settings.default_category ELSE EXCLUDED.default_category END,
+         default_workspace_slug = CASE WHEN $6 IS NULL THEN tenant_settings.default_workspace_slug ELSE EXCLUDED.default_workspace_slug END,
+         updated_at              = NOW()
+       RETURNING *`,
+      [
+        req.params.id,
+        proxmox_url ?? null,
+        caddy_admin_url ?? null,
+        category_rules !== undefined ? JSON.stringify(category_rules) : null,
+        default_category ?? null,
+        default_workspace_slug ?? null,
+      ]
+    );
+    recordAudit(req, "tenant.settings.update", req.params.id, "success");
+    res.json({ ok: true, settings: rows[0] });
+  } catch (err) {
+    if (err.code === "23503") return res.status(404).json({ ok: false, error: "Tenant not found" });
     console.error("[tenants] error:", err.message);
     res.status(500).json({ ok: false, error: "Service unavailable" });
   }
