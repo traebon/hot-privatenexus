@@ -562,6 +562,298 @@ function PrivateNexusDashboard({ authUser }) {
   }
 
   // -------------------------------------------------------------------------
+  // Inner component — SuperAdmin console (tenant management), superadmin-only.
+  // Self-contained like StacksBoard: /api/tenants itself is role-gated server
+  // side, so this checks can("superadmin") up front rather than gating each
+  // action individually the way the Admin board does.
+  // -------------------------------------------------------------------------
+  function SuperAdminBoard() {
+    const [tenants, setTenants] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState(false);
+
+    const [expandedId, setExpandedId] = useState(null);
+    const [members, setMembers] = useState({}); // tenantId -> members[]
+    const [membersLoading, setMembersLoading] = useState(false);
+
+    const [showCreateModal, setShowCreateModal] = useState(false);
+    const [createForm, setCreateForm] = useState({ name: "", slug: "" });
+    const [createSaving, setCreateSaving] = useState(false);
+    const [createError, setCreateError] = useState(null);
+
+    const [addMemberForm, setAddMemberForm] = useState({ user_sub: "", role: "member" });
+    const [addMemberSaving, setAddMemberSaving] = useState(false);
+    const [addMemberError, setAddMemberError] = useState(null);
+
+    const loadTenants = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/tenants`);
+        if (!res.ok) { setLoadError(true); return; }
+        const data = await res.json();
+        setTenants(data.tenants || []);
+        setLoadError(false);
+      } catch {
+        setLoadError(true);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    useEffect(() => {
+      if (!can("superadmin")) { setLoading(false); return; }
+      loadTenants();
+      const interval = setInterval(loadTenants, 30000);
+      return () => clearInterval(interval);
+    }, []);
+
+    const loadMembers = async (tenantId) => {
+      setMembersLoading(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/tenants/${tenantId}/members`);
+        const data = await res.json();
+        setMembers((m) => ({ ...m, [tenantId]: data.members || [] }));
+      } catch {
+        /* leave stale/absent — row still shows its last-known members */
+      } finally {
+        setMembersLoading(false);
+      }
+    };
+
+    const toggleExpand = (tenantId) => {
+      if (expandedId === tenantId) { setExpandedId(null); return; }
+      setExpandedId(tenantId);
+      if (!members[tenantId]) loadMembers(tenantId);
+    };
+
+    const createTenant = async () => {
+      setCreateSaving(true);
+      setCreateError(null);
+      try {
+        const res = await fetch(`${API_BASE}/api/tenants`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(createForm),
+        });
+        const data = await res.json();
+        if (!res.ok) { setCreateError(data.error || "Failed to create tenant"); return; }
+        setShowCreateModal(false);
+        setCreateForm({ name: "", slug: "" });
+        await loadTenants();
+      } catch (err) {
+        setCreateError(err.message);
+      } finally {
+        setCreateSaving(false);
+      }
+    };
+
+    const addMember = async (tenantId) => {
+      setAddMemberSaving(true);
+      setAddMemberError(null);
+      try {
+        const res = await fetch(`${API_BASE}/api/tenants/${tenantId}/members`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(addMemberForm),
+        });
+        const data = await res.json();
+        if (!res.ok) { setAddMemberError(data.error || "Failed to add member"); return; }
+        setAddMemberForm({ user_sub: "", role: "member" });
+        await loadMembers(tenantId);
+        await loadTenants();
+      } catch (err) {
+        setAddMemberError(err.message);
+      } finally {
+        setAddMemberSaving(false);
+      }
+    };
+
+    const removeMember = async (tenantId, userSub) => {
+      try {
+        await fetch(`${API_BASE}/api/tenants/${tenantId}/members/${encodeURIComponent(userSub)}`, { method: "DELETE" });
+        await loadMembers(tenantId);
+        await loadTenants();
+      } catch {
+        /* row stays as-is; user can retry */
+      }
+    };
+
+    if (!can("superadmin")) {
+      return (
+        <div className="rounded-2xl border border-purple-400/20 bg-neutral-900/70 p-8 text-center">
+          <div className="text-sm text-neutral-400">
+            SuperAdmin console requires the <span className="font-semibold text-purple-300">superadmin</span> role.
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-xs uppercase tracking-wider text-purple-300/80">System</div>
+            <div className="text-lg font-semibold">SuperAdmin — Tenants</div>
+          </div>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="rounded-lg border border-purple-400/30 bg-purple-500/10 px-3 py-1 text-xs text-purple-300 hover:bg-purple-500/20"
+          >
+            + New Tenant
+          </button>
+        </div>
+
+        {loadError && (
+          <div className="rounded-lg bg-rose-500/15 px-3 py-2 text-xs text-rose-300">Failed to load tenants — is /api/tenants reachable?</div>
+        )}
+        {loading && <div className="text-xs text-neutral-600">Loading…</div>}
+
+        <div className="space-y-2">
+          {tenants.map((t) => {
+            const isExpanded = expandedId === t.id;
+            const healthPct = t.service_count > 0 ? Math.round((t.healthy_count / t.service_count) * 100) : null;
+            return (
+              <div key={t.id} className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/70">
+                <div
+                  onClick={() => toggleExpand(t.id)}
+                  className="flex cursor-pointer items-center justify-between px-4 py-3 hover:bg-neutral-800/40"
+                >
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-neutral-200">{t.name}</span>
+                      <span className="font-mono text-[11px] text-neutral-500">{t.slug}</span>
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-neutral-500">
+                      {t.member_count} member{t.member_count === 1 ? "" : "s"} · {t.service_count} service{t.service_count === 1 ? "" : "s"}
+                      {t.last_activity_at ? <> · last activity {new Date(t.last_activity_at).toLocaleString()}</> : <> · no activity yet</>}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {t.service_count > 0 ? (
+                      <span
+                        className={[
+                          "rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+                          healthPct === 100 ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-300"
+                            : healthPct >= 50 ? "border-amber-400/40 bg-amber-500/10 text-amber-300"
+                            : "border-rose-400/40 bg-rose-500/10 text-rose-300",
+                        ].join(" ")}
+                      >
+                        {t.healthy_count}/{t.service_count} healthy
+                      </span>
+                    ) : (
+                      <span className="rounded-full border border-neutral-700 bg-neutral-800/60 px-2 py-0.5 text-[10px] text-neutral-500">no services</span>
+                    )}
+                    <span className={["text-[10px] transition-transform", isExpanded ? "rotate-90" : ""].join(" ")}>▸</span>
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div className="space-y-3 border-t border-neutral-800 bg-neutral-950/40 px-4 py-3">
+                    <div className="text-[10px] uppercase tracking-wide text-neutral-500">Members</div>
+                    {membersLoading && !members[t.id] && <div className="text-xs text-neutral-600">Loading members…</div>}
+                    <div className="space-y-1">
+                      {(members[t.id] || []).map((m) => (
+                        <div key={m.id} className="flex items-center justify-between rounded-lg bg-neutral-900/70 px-3 py-1.5">
+                          <div className="font-mono text-[11px] text-neutral-300">{m.user_sub}</div>
+                          <div className="flex items-center gap-3">
+                            <span className="text-[10px] text-neutral-500">{m.role}</span>
+                            <button onClick={() => removeMember(t.id, m.user_sub)} className="text-[10px] text-neutral-500 hover:text-rose-400">
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      {members[t.id] && members[t.id].length === 0 && (
+                        <div className="text-xs text-neutral-600">No members yet</div>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <input
+                        value={addMemberForm.user_sub}
+                        onChange={(e) => setAddMemberForm((f) => ({ ...f, user_sub: e.target.value }))}
+                        placeholder="Keycloak user sub (UUID)"
+                        className="flex-1 rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-xs font-mono text-neutral-200 focus:border-purple-400/50 focus:outline-none"
+                      />
+                      <select
+                        value={addMemberForm.role}
+                        onChange={(e) => setAddMemberForm((f) => ({ ...f, role: e.target.value }))}
+                        className="rounded-lg border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-xs text-neutral-200 focus:border-purple-400/50 focus:outline-none"
+                      >
+                        <option value="member">member</option>
+                        <option value="owner">owner</option>
+                      </select>
+                      <button
+                        onClick={() => addMember(t.id)}
+                        disabled={addMemberSaving || !addMemberForm.user_sub.trim()}
+                        className="rounded-lg border border-purple-400/30 bg-purple-500/10 px-3 py-1.5 text-xs text-purple-300 hover:bg-purple-500/20 disabled:opacity-50"
+                      >
+                        {addMemberSaving ? "Adding…" : "Add"}
+                      </button>
+                    </div>
+                    {addMemberError && <div className="text-xs text-rose-400">{addMemberError}</div>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {!loading && !loadError && tenants.length === 0 && (
+            <div className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-6 text-center text-xs text-neutral-600">No tenants yet</div>
+          )}
+        </div>
+
+        {showCreateModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-sm rounded-2xl border border-purple-400/20 bg-neutral-950 shadow-2xl">
+              <div className="flex items-center justify-between border-b border-neutral-800 px-6 py-4">
+                <div className="text-base font-semibold">New Tenant</div>
+                <button onClick={() => setShowCreateModal(false)} className="text-lg text-neutral-500 hover:text-white">✕</button>
+              </div>
+              <div className="space-y-3 px-6 py-4 text-sm">
+                <div>
+                  <label className="mb-1 block text-xs text-neutral-400">Name *</label>
+                  <input
+                    value={createForm.name}
+                    onChange={(e) =>
+                      setCreateForm((f) => ({ ...f, name: e.target.value, slug: f.slug || e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, "-") }))
+                    }
+                    placeholder="Acme Corp"
+                    autoFocus
+                    className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-purple-400/50 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-neutral-400">Slug</label>
+                  <input
+                    value={createForm.slug}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "") }))}
+                    placeholder="acme-corp"
+                    className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm font-mono text-neutral-200 focus:border-purple-400/50 focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div className="border-t border-neutral-800 px-6 py-4">
+                {createError && <div className="mb-3 rounded-lg bg-rose-500/15 px-3 py-2 text-xs text-rose-300">{createError}</div>}
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setShowCreateModal(false)} className="rounded-lg border border-neutral-700 px-4 py-2 text-xs text-neutral-400 hover:text-white">
+                    Cancel
+                  </button>
+                  <button
+                    onClick={createTenant}
+                    disabled={createSaving || !createForm.name.trim() || !createForm.slug.trim()}
+                    className="rounded-lg border border-purple-400/30 bg-purple-500/10 px-4 py-2 text-xs text-purple-300 hover:bg-purple-500/20 disabled:opacity-50"
+                  >
+                    {createSaving ? "Creating…" : "Create"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // State
   // -------------------------------------------------------------------------
   const [activeBoard, setActiveBoard] = useState("Home");
@@ -1912,7 +2204,7 @@ function PrivateNexusDashboard({ authUser }) {
     { name: "Services",       boards: ["Inventory", "Stacks", "Catalogue", "Discovery", "Dependencies"] },
     { name: "Infrastructure", boards: ["DNS", "Files"] },
     { name: "Governance",     boards: ["Governance", "Recovery", "Intelligence"] },
-    { name: "System",         boards: ["Admin", "Emergency"] },
+    { name: "System",         boards: ["Admin", "SuperAdmin", "Emergency"] },
   ];
 
   // Idle-state accent per group header, each echoing the color already
@@ -1931,6 +2223,7 @@ function PrivateNexusDashboard({ authUser }) {
     Home:      { active: "from-cyan-400 to-blue-500",     ring: "border-cyan-400/30",     hover: "hover:border-cyan-400/30",     shell: "from-cyan-500/10 to-blue-500/5" },
     Ops:       { active: "from-emerald-400 to-green-500", ring: "border-emerald-400/30",  hover: "hover:border-emerald-400/30",  shell: "from-emerald-500/10 to-green-500/5" },
     Admin:     { active: "from-purple-400 to-indigo-500", ring: "border-purple-400/30",   hover: "hover:border-purple-400/30",   shell: "from-purple-500/10 to-indigo-500/5" },
+    SuperAdmin: { active: "from-fuchsia-400 to-purple-500", ring: "border-fuchsia-400/30", hover: "hover:border-fuchsia-400/30", shell: "from-fuchsia-500/10 to-purple-500/5" },
     Stacks:    { active: "from-amber-400 to-orange-500",  ring: "border-amber-400/30",    hover: "hover:border-amber-400/30",    shell: "from-amber-500/10 to-orange-500/5" },
     Files:     { active: "from-rose-400 to-pink-500",     ring: "border-rose-400/30",     hover: "hover:border-rose-400/30",     shell: "from-rose-500/10 to-pink-500/5" },
     Inventory: { active: "from-teal-400 to-cyan-500",     ring: "border-teal-400/30",     hover: "hover:border-teal-400/30",     shell: "from-teal-500/10 to-cyan-500/5" },
@@ -6263,6 +6556,9 @@ function PrivateNexusDashboard({ authUser }) {
             adminView === "workspaces"    ? workspacesPanel :
             adminRootView
           )}
+
+          {/* SuperAdmin */}
+          {activeBoard === "SuperAdmin" && <SuperAdminBoard />}
 
           {/* Stacks */}
           {activeBoard === "Stacks" && <StacksBoard />}
