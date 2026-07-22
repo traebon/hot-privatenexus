@@ -66,10 +66,20 @@ host_candidate = {
     },
 }
 
+# Images used purely as ephemeral, one-shot tooling (e.g. a bare curl call
+# against another container, dead again within a second) — never a real
+# long-running service. `docker ps` is a point-in-time snapshot, so an
+# unlucky timer firing can still catch one mid-life; exclude by image so it
+# never gets queued as a discovery candidate in the first place.
+EPHEMERAL_PROBE_IMAGE_PREFIXES = ("curlimages/curl",)
+
 candidates = [host_candidate]
 for c in json.loads(os.environ["DOCKER_PS_JSON"]):
     name = c.get("Names", "")
     if not name:
+        continue
+    image = c.get("Image", "")
+    if image.startswith(EPHEMERAL_PROBE_IMAGE_PREFIXES):
         continue
     candidates.append({
         "source": "docker",
