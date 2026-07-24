@@ -3949,7 +3949,7 @@ function PrivateNexusDashboard({ authUser }) {
           {[
             { label: "Category",     value: CATEGORY_LABELS[selectedService.category] || selectedService.category },
             { label: "Runtime",      value: selectedService.runtime_type },
-            { label: "Access",       value: selectedService.access_mode.replace(/_/g, " ") },
+            { label: "Access",       value: (selectedService.access_mode || "unknown").replace(/_/g, " ") },
             { label: "Owner",        value: selectedService.owner || "—" },
             { label: "Backup",       value: selectedService.backup_policy === "none" ? "No backup" : selectedService.backup_policy },
             { label: "Workspace",    value: selectedService.workspace_name || "—" },
@@ -4105,7 +4105,7 @@ function PrivateNexusDashboard({ authUser }) {
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
           <div className="mb-3 flex items-center justify-between">
             <div className="text-sm font-semibold text-neutral-200">Backup Records</div>
-            {userRole >= 1 && (
+            {can("operator") && (
               <button onClick={() => { setAddBackupForm({ label: "", backup_type: "manual", trust_state: "unknown", location: "", taken_at: "", notes: "" }); setAddBackupError(null); setShowAddBackupModal(true); }}
                 className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20 transition-colors">
                 + Add Record
@@ -4116,7 +4116,7 @@ function PrivateNexusDashboard({ authUser }) {
             <div className="text-xs text-neutral-500">Loading…</div>
           ) : serviceBackups.length === 0 ? (
             <div className="rounded-lg bg-neutral-800/60 px-3 py-3 text-center text-xs text-neutral-500">
-              No backup records registered for this service.{userRole >= 1 ? " Use + Add Record to register one." : ""}
+              No backup records registered for this service.{can("operator") ? " Use + Add Record to register one." : ""}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -4128,7 +4128,7 @@ function PrivateNexusDashboard({ authUser }) {
                     <th className="pb-2 pr-3 font-medium">Trust</th>
                     <th className="pb-2 pr-3 font-medium">Taken</th>
                     <th className="pb-2 font-medium">Location</th>
-                    {userRole >= 1 && <th className="pb-2 text-right font-medium">Actions</th>}
+                    {can("operator") && <th className="pb-2 text-right font-medium">Actions</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-800/50">
@@ -4147,7 +4147,7 @@ function PrivateNexusDashboard({ authUser }) {
                       </td>
                       <td className="py-2 pr-3 text-neutral-400">{new Date(bk.taken_at).toLocaleDateString()}</td>
                       <td className="py-2 text-neutral-500 truncate max-w-[120px]" title={bk.location || ""}>{bk.location || "—"}</td>
-                      {userRole >= 1 && (
+                      {can("operator") && (
                         <td className="py-2 text-right">
                           <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             {bk.trust_state !== "lkg" && (
@@ -4164,7 +4164,7 @@ function PrivateNexusDashboard({ authUser }) {
                                 Trust
                               </button>
                             )}
-                            {userRole >= 2 && (
+                            {can("admin") && (
                               <button onClick={() => { if (confirm(`Delete backup record "${bk.label}"?`)) deleteServiceBackup(bk.id); }}
                                 className="rounded px-1.5 py-0.5 text-[10px] border border-rose-400/30 text-rose-400 hover:bg-rose-500/10">
                                 Del
