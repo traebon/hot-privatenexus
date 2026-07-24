@@ -4079,7 +4079,7 @@ function PrivateNexusDashboard({ authUser }) {
           ) : recoveryScore ? (
             <div className="space-y-2">
               <div className="flex items-center gap-4 text-xs text-neutral-500">
-                <div>Policy: <span className={["font-medium", selectedService.backup_policy === "none" ? "text-amber-400" : "text-emerald-400"].join(" ")}>{selectedService.backup_policy}</span></div>
+                <div>Policy: <span className={["font-medium", selectedService.backup_policy === "none" && !selectedService.backup_policy_exempt ? "text-amber-400" : "text-emerald-400"].join(" ")}>{selectedService.backup_policy === "none" && selectedService.backup_policy_exempt ? "none (exempt)" : selectedService.backup_policy}</span></div>
                 <div>Records: <span className="font-medium text-neutral-300">{recoveryScore.backupCount}</span></div>
                 {recoveryScore.latestAt && <div>Latest: <span className="font-medium text-neutral-300">{new Date(recoveryScore.latestAt).toLocaleDateString()}</span></div>}
               </div>
@@ -6189,7 +6189,7 @@ function PrivateNexusDashboard({ authUser }) {
             {svcs.map((svc) => {
               const missingFields = [
                 !svc.owner && "owner",
-                svc.backup_policy === "none" && "backup policy",
+                svc.backup_policy === "none" && !svc.backup_policy_exempt && "backup policy",
                 !svc.health_endpoint && "health check",
               ].filter(Boolean);
 
@@ -6249,8 +6249,9 @@ function PrivateNexusDashboard({ authUser }) {
                     <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-[10px] text-neutral-400">
                       {svc.runtime_type}
                     </span>
-                    <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-[10px] text-neutral-400">
-                      {svc.backup_policy === "none" ? "no backup" : `backup: ${svc.backup_policy}`}
+                    <span className={["rounded-full px-2 py-0.5 text-[10px]", svc.backup_policy === "none" && svc.backup_policy_exempt ? "bg-neutral-800 text-neutral-500" : "bg-neutral-800 text-neutral-400"].join(" ")}
+                      title={svc.backup_policy === "none" && svc.backup_policy_exempt ? "Not backed up by PrivateNexus — exempted, see recovery runbook" : undefined}>
+                      {svc.backup_policy === "none" ? (svc.backup_policy_exempt ? "backup: exempt" : "no backup") : `backup: ${svc.backup_policy}`}
                     </span>
                     {svc.workspace_name && (
                       <span className="rounded-full bg-teal-500/10 px-2 py-0.5 text-[10px] text-teal-400">{svc.workspace_name}</span>
