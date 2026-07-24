@@ -3981,7 +3981,9 @@ function PrivateNexusDashboard({ authUser }) {
 
           {!selectedService.health_endpoint ? (
             <div className="rounded-lg bg-neutral-800/60 px-3 py-2.5 text-xs text-neutral-500">
-              No health endpoint configured. Edit this service to add one.
+              {selectedService.health_check_exempt
+                ? "No health endpoint by design — exempted, see this service's recovery runbook for why."
+                : "No health endpoint configured. Edit this service to add one."}
             </div>
           ) : (
             <>
@@ -5584,8 +5586,8 @@ function PrivateNexusDashboard({ authUser }) {
                     {(govReport.sections?.restore_readiness || []).map(s => (
                       <tr key={s.id} className="hover:bg-white/5">
                         <td className="py-1 pr-4 text-neutral-300">{s.name}</td>
-                        <td className="pr-2 text-neutral-500 text-[10px]">{s.backup_policy}</td>
-                        <td className="pr-2">{s.health_endpoint ? <span className="text-emerald-400">✓</span> : <span className="text-rose-400">✗</span>}</td>
+                        <td className="pr-2 text-neutral-500 text-[10px]">{s.backup_policy}{s.backup_policy_exempt && <span className="text-neutral-600"> (exempt)</span>}</td>
+                        <td className="pr-2">{s.health_endpoint ? <span className="text-emerald-400">✓</span> : s.health_endpoint_exempt ? <span className="text-neutral-500">exempt</span> : <span className="text-rose-400">✗</span>}</td>
                         <td className="pr-2">{s.recovery_runbook_url ? <span className="text-emerald-400">✓</span> : <span className="text-rose-400">✗</span>}</td>
                         <td className={s.status === "healthy" ? "text-emerald-400" : s.status === "down" ? "text-rose-400" : "text-neutral-500"}>{s.status}</td>
                       </tr>
@@ -6190,7 +6192,7 @@ function PrivateNexusDashboard({ authUser }) {
               const missingFields = [
                 !svc.owner && "owner",
                 svc.backup_policy === "none" && !svc.backup_policy_exempt && "backup policy",
-                !svc.health_endpoint && "health check",
+                !svc.health_endpoint && !svc.health_check_exempt && "health check",
               ].filter(Boolean);
 
               return (

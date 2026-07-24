@@ -301,6 +301,9 @@ governanceRouter.get("/report", requireRole("admin"), async (req, res) => {
       ]);
 
     const byRule = (key) => violations.filter(v => v.rule_key === key);
+    const idsWithGap = (key) => new Set(byRule(key).map(v => v.service_id));
+    const backupGapIds = idsWithGap("backup_policy_required");
+    const healthGapIds = idsWithGap("health_check_required");
 
     res.json({
       ok: true,
@@ -325,7 +328,9 @@ governanceRouter.get("/report", requireRole("admin"), async (req, res) => {
           id: s.id, name: s.name, slug: s.slug, workspace: s.workspace_name,
           status: s.status, backup_policy: s.backup_policy,
           health_endpoint: !!s.health_endpoint,
+          health_endpoint_exempt: !s.health_endpoint && !healthGapIds.has(s.id),
           recovery_runbook_url: !!s.recovery_runbook_url,
+          backup_policy_exempt: (!s.backup_policy || s.backup_policy === "none") && !backupGapIds.has(s.id),
         })),
       },
     });

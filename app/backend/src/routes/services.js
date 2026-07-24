@@ -74,7 +74,8 @@ servicesRouter.get("/", requireRole("viewer"), async (req, res) => {
               (SELECT COUNT(*)::int FROM service_backups b WHERE b.service_id = s.id AND b.tenant_id = s.tenant_id) AS backup_count,
               (SELECT COUNT(*)::int FROM service_backups b WHERE b.service_id = s.id AND b.tenant_id = s.tenant_id AND b.trust_state = 'lkg') AS lkg_count,
               (SELECT COUNT(*)::int FROM service_backups b WHERE b.service_id = s.id AND b.tenant_id = s.tenant_id AND b.trust_state IN ('lkg','trusted')) AS trusted_count,
-              EXISTS(SELECT 1 FROM policy_exceptions pe WHERE pe.service_id = s.id AND pe.tenant_id = s.tenant_id AND pe.rule_key = 'backup_policy_required' AND (pe.expires_at IS NULL OR pe.expires_at > NOW())) AS backup_policy_exempt
+              EXISTS(SELECT 1 FROM policy_exceptions pe WHERE pe.service_id = s.id AND pe.tenant_id = s.tenant_id AND pe.rule_key = 'backup_policy_required' AND (pe.expires_at IS NULL OR pe.expires_at > NOW())) AS backup_policy_exempt,
+              EXISTS(SELECT 1 FROM policy_exceptions pe WHERE pe.service_id = s.id AND pe.tenant_id = s.tenant_id AND pe.rule_key = 'health_check_required' AND (pe.expires_at IS NULL OR pe.expires_at > NOW())) AS health_check_exempt
          FROM services s
          LEFT JOIN workspaces w ON w.id = s.workspace_id
         ${where}
