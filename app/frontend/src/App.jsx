@@ -958,6 +958,17 @@ function PrivateNexusDashboard({ authUser }) {
   const [emergencyResult, setEmergencyResult] = useState(null);
   const [maintenanceReason, setMaintenanceReason] = useState("");
   const [maintenanceDuration, setMaintenanceDuration] = useState("1h");
+  // Lockdown Mode board
+  const [lockdownStatus, setLockdownStatus] = useState(null);
+  const [lockdownStatusError, setLockdownStatusError] = useState(false);
+  const [lockdownHistory, setLockdownHistory] = useState([]);
+  const [lockdownPending, setLockdownPending] = useState(false);
+  const [lockdownActionError, setLockdownActionError] = useState(null);
+  const [lockdownConfirm, setLockdownConfirm] = useState(null); // { tier, reason, target_ip, target_scope }
+  const [lockdownEscalateTier, setLockdownEscalateTier] = useState("alert");
+  const [lockdownEscalateReason, setLockdownEscalateReason] = useState("");
+  const [lockdownTargetIp, setLockdownTargetIp] = useState("");
+  const [lockdownClearNote, setLockdownClearNote] = useState("");
 
   // Dependencies board
   const [depGraph, setDepGraph]               = useState({ services: [], edges: [] });
@@ -1538,6 +1549,12 @@ function PrivateNexusDashboard({ authUser }) {
     fetchEmergencyStatus();
   }, [activeBoard]);
 
+  useEffect(() => {
+    if (activeBoard !== "Lockdown") return;
+    fetchLockdownStatus();
+    fetchLockdownHistory();
+  }, [activeBoard]);
+
   async function loadApplyLog(id) {
     try {
       const res = await fetch(`${API_BASE}/api/files/apply-log?fileId=${encodeURIComponent(id)}`);
@@ -1942,6 +1959,82 @@ function PrivateNexusDashboard({ authUser }) {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Lockdown Mode board
+  // -------------------------------------------------------------------------
+  async function fetchLockdownStatus() {
+    setLockdownStatusError(false);
+    try {
+      const res = await fetch(`${API_BASE}/api/lockdown/status`);
+      if (res.ok) setLockdownStatus(await res.json());
+      else setLockdownStatusError(true);
+    } catch {
+      setLockdownStatusError(true);
+    }
+  }
+
+  async function fetchLockdownHistory() {
+    try {
+      const res = await fetch(`${API_BASE}/api/lockdown/history`);
+      if (res.ok) {
+        const data = await res.json();
+        setLockdownHistory(data.events || []);
+      }
+    } catch {
+      // Non-fatal — the timeline just stays stale until the next refresh.
+    }
+  }
+
+  async function runLockdownEscalate(tier, reason, opts = {}) {
+    setLockdownPending(true);
+    setLockdownActionError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/lockdown/escalate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tier, reason, ...opts }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setLockdownActionError(data.error);
+      } else {
+        setLogs((prev) => [`[${new Date().toLocaleTimeString()}] lockdown: escalated to ${tier}`, ...prev]);
+      }
+      await fetchLockdownStatus();
+      await fetchLockdownHistory();
+    } catch (err) {
+      setLockdownActionError(err.message);
+    } finally {
+      setLockdownPending(false);
+      setLockdownConfirm(null);
+    }
+  }
+
+  async function runLockdownClear(note) {
+    setLockdownPending(true);
+    setLockdownActionError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/lockdown/clear`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note: note || undefined }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setLockdownActionError(data.error);
+      } else {
+        setLogs((prev) => [`[${new Date().toLocaleTimeString()}] lockdown: cleared (was ${data.cleared_from})`, ...prev]);
+      }
+      await fetchLockdownStatus();
+      await fetchLockdownHistory();
+    } catch (err) {
+      setLockdownActionError(err.message);
+    } finally {
+      setLockdownPending(false);
+      setLockdownClearNote("");
+    }
+  }
+
   async function markAsKnownGood(fileName) {
     if (!selectedFile) return;
     try {
@@ -2222,7 +2315,7 @@ function PrivateNexusDashboard({ authUser }) {
     { name: "Services",       boards: ["Inventory", "Stacks", "Catalogue", "Discovery", "Dependencies"] },
     { name: "Infrastructure", boards: ["DNS", "Files"] },
     { name: "Governance",     boards: ["Governance", "Recovery", "Intelligence"] },
-    { name: "System",         boards: ["Admin", "SuperAdmin", "Emergency"] },
+    { name: "System",         boards: ["Admin", "SuperAdmin", "Lockdown", "Emergency"] },
   ];
 
   // Idle-state accent per group header, each echoing the color already
@@ -2256,6 +2349,7 @@ function PrivateNexusDashboard({ authUser }) {
     Recovery:  { active: "from-emerald-400 to-teal-500",  ring: "border-emerald-400/30",  hover: "hover:border-emerald-400/30",  shell: "from-emerald-500/10 to-teal-500/5" },
     Intelligence: { active: "from-sky-400 to-violet-500",   ring: "border-sky-400/30",   hover: "hover:border-sky-400/30",   shell: "from-sky-500/10 to-violet-500/5" },
     Emergency: { active: "from-rose-400 to-pink-500",     ring: "border-rose-400/30",     hover: "hover:border-rose-400/30",     shell: "from-rose-500/10 to-pink-500/5" },
+    Lockdown:  { active: "from-orange-400 to-red-500",    ring: "border-orange-400/30",   hover: "hover:border-orange-400/30",   shell: "from-orange-500/10 to-red-500/5" },
   };
 
   const theme = boardThemes[activeBoard];
@@ -8267,6 +8361,211 @@ function PrivateNexusDashboard({ authUser }) {
             );
           })()}
 
+          {activeBoard === "Lockdown" && (() => {
+            const LOCKDOWN_TIERS = ["alert", "soft", "hard", "full"];
+            const LOCKDOWN_TIER_MIN_ROLE = { alert: "operator", soft: "operator", hard: "admin", full: "breakglass" };
+            const LOCKDOWN_TIER_COLORS = {
+              none:  { text: "text-emerald-300", border: "border-emerald-400/30", bg: "bg-emerald-500/10", grad: "from-emerald-500/15 via-teal-500/10 to-cyan-500/10" },
+              alert: { text: "text-amber-300",   border: "border-amber-400/30",   bg: "bg-amber-500/10",   grad: "from-amber-500/15 via-yellow-500/10 to-orange-500/10" },
+              soft:  { text: "text-orange-300",  border: "border-orange-400/30",  bg: "bg-orange-500/10",  grad: "from-orange-500/15 via-amber-500/10 to-red-500/10" },
+              hard:  { text: "text-rose-300",    border: "border-rose-400/30",    bg: "bg-rose-500/10",    grad: "from-rose-500/15 via-red-500/10 to-pink-500/10" },
+              full:  { text: "text-red-300",     border: "border-red-500/40",     bg: "bg-red-600/15",     grad: "from-red-600/20 via-rose-600/15 to-red-500/10" },
+            };
+            const currentTier = lockdownStatus?.tier || "none";
+            const currentTierIdx = LOCKDOWN_TIERS.indexOf(currentTier); // -1 when "none"
+            const colors = LOCKDOWN_TIER_COLORS[currentTier] || LOCKDOWN_TIER_COLORS.none;
+            const availableEscalateTiers = LOCKDOWN_TIERS.filter((t) => LOCKDOWN_TIERS.indexOf(t) > currentTierIdx);
+            const selectedTier = availableEscalateTiers.includes(lockdownEscalateTier) ? lockdownEscalateTier : availableEscalateTiers[0];
+            const selectedTierMinRole = LOCKDOWN_TIER_MIN_ROLE[selectedTier];
+            const canEscalateSelected = selectedTier ? can(selectedTierMinRole) : false;
+
+            return (
+            <div className="space-y-4">
+              {/* Current tier banner */}
+              <div className={["rounded-2xl border p-4 bg-gradient-to-r", colors.border, colors.grad].join(" ")}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className={["text-xs uppercase tracking-wider", colors.text, "opacity-80"].join(" ")}>Security Lockdown Mode</div>
+                    <div className="mt-0.5 flex items-center gap-2">
+                      <span className={["text-lg font-semibold uppercase", colors.text].join(" ")}>{currentTier}</span>
+                      {currentTier !== "none" && lockdownStatus?.activated_at && (
+                        <span className="text-xs text-neutral-500">
+                          since {lockdownStatus.activated_at.slice(0, 19).replace("T", " ")} UTC · {lockdownStatus.activated_by}
+                          {lockdownStatus.trigger_source && lockdownStatus.trigger_source !== "manual" ? ` (${lockdownStatus.trigger_source})` : ""}
+                        </span>
+                      )}
+                    </div>
+                    {currentTier !== "none" && lockdownStatus?.reason && (
+                      <div className="mt-1 text-xs text-neutral-400">{lockdownStatus.reason}</div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => { fetchLockdownStatus(); fetchLockdownHistory(); }}
+                    className={["rounded-lg border px-3 py-1 text-xs", colors.border, colors.bg, colors.text, "hover:opacity-80"].join(" ")}
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {lockdownStatusError && (
+                  <div className="mt-2 text-xs text-amber-400">Status endpoint unavailable.</div>
+                )}
+              </div>
+
+              {/* Tier ladder */}
+              <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
+                <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-neutral-500">Tier Ladder</div>
+                <div className="flex items-center gap-2">
+                  {LOCKDOWN_TIERS.map((t, i) => {
+                    const reached = currentTierIdx >= i;
+                    const isCurrent = currentTier === t;
+                    const c = LOCKDOWN_TIER_COLORS[t];
+                    return (
+                      <div key={t} className="flex flex-1 items-center gap-2">
+                        <div className={[
+                          "flex-1 rounded-xl border px-3 py-2 text-center transition",
+                          reached ? [c.border, c.bg].join(" ") : "border-neutral-800 bg-neutral-900/50",
+                          isCurrent ? "ring-2 ring-offset-0 " + c.border : "",
+                        ].join(" ")}>
+                          <div className={["text-xs font-semibold uppercase", reached ? c.text : "text-neutral-600"].join(" ")}>{t}</div>
+                          <div className="mt-0.5 text-[10px] text-neutral-600">requires {LOCKDOWN_TIER_MIN_ROLE[t]}+</div>
+                        </div>
+                        {i < LOCKDOWN_TIERS.length - 1 && <span className="text-neutral-700">→</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-2 text-[10px] text-neutral-600">
+                  Escalation is one-way — de-escalating always goes through Clear below, never automatic. Full tier has no automatic trigger; manual + breakglass only.
+                </div>
+              </div>
+
+              {/* Escalate / Clear controls */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
+                  <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-neutral-500">Manual Escalate</div>
+                  {availableEscalateTiers.length === 0 ? (
+                    <div className="text-xs text-neutral-500">Already at the highest tier (Full).</div>
+                  ) : (
+                    <div className="space-y-2">
+                      <select
+                        value={selectedTier}
+                        onChange={(e) => setLockdownEscalateTier(e.target.value)}
+                        className="w-full rounded-lg border border-neutral-700 bg-neutral-800/60 px-2 py-1.5 text-xs text-neutral-200 outline-none focus:border-orange-400/30"
+                      >
+                        {availableEscalateTiers.map((t) => (
+                          <option key={t} value={t}>{t} (requires {LOCKDOWN_TIER_MIN_ROLE[t]}+)</option>
+                        ))}
+                      </select>
+                      <textarea
+                        value={lockdownEscalateReason}
+                        onChange={(e) => setLockdownEscalateReason(e.target.value)}
+                        placeholder="Reason (required)"
+                        rows={2}
+                        className="w-full resize-none rounded-lg border border-neutral-700 bg-neutral-800/60 px-2 py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 outline-none focus:border-orange-400/30"
+                      />
+                      {selectedTier === "hard" && (
+                        <input
+                          value={lockdownTargetIp}
+                          onChange={(e) => setLockdownTargetIp(e.target.value)}
+                          placeholder="Target IP/CIDR for CrowdSec ban (optional)"
+                          className="w-full rounded-lg border border-neutral-700 bg-neutral-800/60 px-2 py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 outline-none focus:border-orange-400/30"
+                        />
+                      )}
+                      <button
+                        onClick={() => setLockdownConfirm({
+                          tier: selectedTier,
+                          reason: lockdownEscalateReason,
+                          target_ip: selectedTier === "hard" && lockdownTargetIp.trim() ? lockdownTargetIp.trim() : undefined,
+                        })}
+                        disabled={lockdownPending || !lockdownEscalateReason.trim() || !canEscalateSelected}
+                        title={!canEscalateSelected ? `Requires ${selectedTierMinRole} role or higher` : undefined}
+                        className={[
+                          "w-full rounded-lg border px-3 py-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40",
+                          LOCKDOWN_TIER_COLORS[selectedTier].border, LOCKDOWN_TIER_COLORS[selectedTier].bg, LOCKDOWN_TIER_COLORS[selectedTier].text,
+                          "hover:opacity-80",
+                        ].join(" ")}
+                      >
+                        {lockdownPending ? "Escalating…" : `Escalate to ${selectedTier}`}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
+                  <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-neutral-500">Clear</div>
+                  {currentTier === "none" ? (
+                    <div className="text-xs text-neutral-500">No active lockdown.</div>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="text-xs text-neutral-500">
+                        Reverts every action this episode took (cooldown multiplier, auto-enabled maintenance mode) before marking it cleared.
+                      </div>
+                      <input
+                        value={lockdownClearNote}
+                        onChange={(e) => setLockdownClearNote(e.target.value)}
+                        placeholder="Note (optional)"
+                        className="w-full rounded-lg border border-neutral-700 bg-neutral-800/60 px-2 py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 outline-none focus:border-emerald-400/30"
+                      />
+                      <button
+                        onClick={() => runLockdownClear(lockdownClearNote)}
+                        disabled={lockdownPending || !can("admin")}
+                        title={!can("admin") ? "Requires admin role" : undefined}
+                        className="w-full rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-300 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {lockdownPending ? "Clearing…" : `Clear (from ${currentTier})`}
+                      </button>
+                    </div>
+                  )}
+                  {lockdownActionError && (
+                    <div className="mt-2 rounded-lg border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{lockdownActionError}</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Timeline */}
+              <div className="rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4">
+                <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-neutral-500">Timeline</div>
+                {lockdownHistory.length === 0 ? (
+                  <div className="text-xs text-neutral-500">No lockdown events yet.</div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {lockdownHistory.map((ev) => {
+                      const isFailed = ev.event_type === "action_failed";
+                      const isTierChange = ev.event_type === "tier_change";
+                      return (
+                        <div key={ev.id} className={[
+                          "rounded-lg border px-3 py-1.5 text-xs",
+                          isFailed ? "border-rose-400/20 bg-rose-500/5" : "border-neutral-800 bg-neutral-800/50",
+                        ].join(" ")}>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              {isTierChange ? (
+                                <span className="text-neutral-300">
+                                  <span className="text-neutral-500">{ev.detail?.from}</span> → <span className="font-medium">{ev.detail?.to}</span>
+                                  {ev.detail?.trigger_source && ev.detail.trigger_source !== "manual" && (
+                                    <span className="ml-1.5 rounded bg-sky-500/10 px-1 py-0.5 text-[10px] text-sky-300">{ev.detail.trigger_source}</span>
+                                  )}
+                                </span>
+                              ) : (
+                                <span className={isFailed ? "text-rose-300" : "text-neutral-300"}>
+                                  {ev.detail?.action}{ev.detail?.target ? ` → ${ev.detail.target}` : ""}
+                                  {isFailed && ev.detail?.blocked ? ` (${ev.detail.blocked})` : ""}
+                                </span>
+                              )}
+                              {ev.detail?.reason && <div className="mt-0.5 truncate text-[10px] text-neutral-600">{ev.detail.reason}</div>}
+                            </div>
+                            <div className="shrink-0 text-[10px] text-neutral-600">{ev.created_at.slice(0, 19).replace("T", " ")}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+            );
+          })()}
+
           {activeBoard === "Emergency" && (
             <div className="space-y-4">
               {/* Header */}
@@ -10015,6 +10314,33 @@ function PrivateNexusDashboard({ authUser }) {
             <div className="flex justify-end gap-2">
               <button onClick={() => setConfirmAction(null)} className="rounded bg-neutral-700 px-3 py-1">Cancel</button>
               <button onClick={() => executeAction(confirmAction)} className="rounded bg-rose-500 px-3 py-1 text-black">Confirm</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Lockdown escalate confirm modal */}
+      {lockdownConfirm && (
+        <div className="fixed inset-0 flex items-center justify-center bg-black/70">
+          <div className="w-96 rounded-xl border border-orange-400/30 bg-neutral-900 p-6">
+            <div className="mb-2 text-lg font-bold uppercase">Escalate to {lockdownConfirm.tier}?</div>
+            <div className="mb-1 text-sm text-neutral-400">{lockdownConfirm.reason}</div>
+            {lockdownConfirm.target_ip && (
+              <div className="mb-3 text-xs text-neutral-500">Will apply a CrowdSec ban against {lockdownConfirm.target_ip}.</div>
+            )}
+            {lockdownConfirm.tier === "full" && (
+              <div className="mb-3 rounded-lg border border-red-500/30 bg-red-600/10 px-3 py-2 text-xs text-red-300">
+                This stops every non-blocklisted container fleet-wide and enables maintenance mode. Highest blast radius in the app.
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setLockdownConfirm(null)} className="rounded bg-neutral-700 px-3 py-1">Cancel</button>
+              <button
+                onClick={() => runLockdownEscalate(lockdownConfirm.tier, lockdownConfirm.reason, { target_ip: lockdownConfirm.target_ip })}
+                className="rounded bg-orange-500 px-3 py-1 text-black"
+              >
+                Confirm
+              </button>
             </div>
           </div>
         </div>
