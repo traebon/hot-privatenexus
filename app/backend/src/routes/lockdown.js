@@ -2,6 +2,7 @@ import { Router } from "express";
 import { getPool } from "../db.js";
 import { recordAudit } from "../auditLog.js";
 import { requireRole, userRole, roleLevel } from "../middleware/requireRole.js";
+import { applyCrowdSecBan } from "../crowdsecClient.js";
 
 export const lockdownRouter = Router();
 
@@ -55,13 +56,13 @@ lockdownRouter.get("/history", requireRole("viewer"), async (req, res) => {
   }
 });
 
-// POST /api/lockdown/escalate — { tier, reason }
+// POST /api/lockdown/escalate — { tier, reason, target_ip?, target_scope?, duration_secs? }
 // Manual-only in this step — trigger_source is always "manual" until the
-// Wazuh webhook (step 4) and CrowdSec/Hard-tier wiring (step 3) land. No
-// side-effecting actions (maintenance mode, CrowdSec bans, container stops)
-// are performed yet — this step only proves the state machine + audit trail.
+// Wazuh webhook (step 4) lands. Hard tier optionally applies a real CrowdSec
+// range-ban (step 3) when target_ip is given; Soft's maintenance-mode
+// auto-enable and Full's fleet-stop reuse are not wired yet.
 lockdownRouter.post("/escalate", requireRole("operator"), async (req, res) => {
-  const { tier, reason } = req.body || {};
+  const { tier, reason, target_ip, target_scope, duration_secs } = req.body || {};
 
   if (!TIERS.includes(tier)) {
     return res.status(400).json({ ok: false, error: `tier must be one of: ${TIERS.join(", ")}` });
@@ -88,39 +89,56 @@ lockdownRouter.post("/escalate", requireRole("operator"), async (req, res) => {
     );
     const current = active[0];
 
-    if (current) {
-      if (tierIndex(tier) <= tierIndex(current.tier)) {
-        return res.status(409).json({
-          ok: false,
-          error: `Already at '${current.tier}', which is at or above '${tier}'. Use /clear to de-escalate first.`,
-        });
-      }
-
-      await db.query(
-        `UPDATE lockdown_state SET tier = $1 WHERE id = $2`,
-        [tier, current.id]
-      );
-      await db.query(
-        `INSERT INTO lockdown_events (lockdown_id, event_type, detail)
-         VALUES ($1, 'tier_change', $2)`,
-        [current.id, JSON.stringify({ from: current.tier, to: tier, reason, trigger_source: "manual", actor })]
-      );
-      recordAudit(req, "lockdown.escalate", tier, "success", { from: current.tier, to: tier, reason });
-      return res.json({ ok: true, tier, lockdown_id: current.id, from: current.tier });
+    if (current && tierIndex(tier) <= tierIndex(current.tier)) {
+      return res.status(409).json({
+        ok: false,
+        error: `Already at '${current.tier}', which is at or above '${tier}'. Use /clear to de-escalate first.`,
+      });
     }
 
-    const { rows: created } = await db.query(
-      `INSERT INTO lockdown_state (tenant_id, tier, activated_by, trigger_source, reason)
-       VALUES ($1, $2, $3, 'manual', $4) RETURNING id`,
-      [tenantId, tier, actor, reason]
-    );
+    const fromTier = current ? current.tier : "none";
+    let lockdownId;
+
+    if (current) {
+      await db.query(`UPDATE lockdown_state SET tier = $1 WHERE id = $2`, [tier, current.id]);
+      lockdownId = current.id;
+    } else {
+      const { rows: created } = await db.query(
+        `INSERT INTO lockdown_state (tenant_id, tier, activated_by, trigger_source, reason)
+         VALUES ($1, $2, $3, 'manual', $4) RETURNING id`,
+        [tenantId, tier, actor, reason]
+      );
+      lockdownId = created[0].id;
+    }
+
     await db.query(
       `INSERT INTO lockdown_events (lockdown_id, event_type, detail)
        VALUES ($1, 'tier_change', $2)`,
-      [created[0].id, JSON.stringify({ from: "none", to: tier, reason, trigger_source: "manual", actor })]
+      [lockdownId, JSON.stringify({ from: fromTier, to: tier, reason, trigger_source: "manual", actor })]
     );
-    recordAudit(req, "lockdown.escalate", tier, "success", { from: "none", to: tier, reason });
-    res.status(201).json({ ok: true, tier, lockdown_id: created[0].id, from: "none" });
+    recordAudit(req, "lockdown.escalate", tier, "success", { from: fromTier, to: tier, reason });
+
+    let banResult = null;
+    if (tier === "hard" && target_ip) {
+      banResult = await applyCrowdSecBan({
+        scope: target_scope === "range" ? "range" : "ip",
+        value: target_ip,
+        durationSecs: Number.isFinite(Number(duration_secs)) ? Number(duration_secs) : undefined,
+        reason,
+      });
+      await db.query(
+        `INSERT INTO lockdown_events (lockdown_id, event_type, detail)
+         VALUES ($1, $2, $3)`,
+        [
+          lockdownId,
+          banResult.ok ? "action_taken" : "action_failed",
+          JSON.stringify({ action: "crowdsec.ban", target: target_ip, scope: target_scope || "ip", result: banResult }),
+        ]
+      );
+      recordAudit(req, "lockdown.crowdsec_ban", target_ip, banResult.ok ? "success" : "failure", banResult);
+    }
+
+    res.status(current ? 200 : 201).json({ ok: true, tier, lockdown_id: lockdownId, from: fromTier, ban: banResult });
   } catch (err) {
     recordAudit(req, "lockdown.escalate", tier, "failure", { error: err.message });
     res.status(500).json({ ok: false, error: err.message });
