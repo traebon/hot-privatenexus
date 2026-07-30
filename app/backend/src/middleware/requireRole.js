@@ -30,3 +30,13 @@ export function userRole(session) {
   }
   return highest >= 0 ? ROLE_HIERARCHY[highest] : null;
 }
+
+// Numeric level for a role name, for routes that need a dynamic (not
+// route-fixed) comparison — e.g. lockdown.js's escalate endpoint, where the
+// required role depends on the tier requested in the body, not the route
+// itself. Exported so callers don't each keep their own private copy of the
+// hierarchy (actions.js's ROLE_LEVEL predates this export and still has its
+// own copy — not touched here, out of scope for this change).
+export function roleLevel(role) {
+  return ROLE_HIERARCHY.indexOf(role);
+}

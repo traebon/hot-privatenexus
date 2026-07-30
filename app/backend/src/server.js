@@ -28,6 +28,7 @@ import { dependenciesRouter }from "./routes/dependencies.js";
 import { governanceRouter }  from "./routes/governance.js";
 import { recoveryRouter }    from "./routes/recovery.js";
 import { intelligenceRouter }from "./routes/intelligence.js";
+import { lockdownRouter }    from "./routes/lockdown.js";
 import { requireAuth }       from "./middleware/requireAuth.js";
 import { requireRole }       from "./middleware/requireRole.js";
 import { tenantsRouter }     from "./routes/tenants.js";
@@ -187,6 +188,7 @@ app.use("/api/dependencies",  dependenciesRouter);
 app.use("/api/governance",    governanceRouter);
 app.use("/api/recovery",      recoveryRouter);
 app.use("/api/intelligence",  intelligenceRouter);
+app.use("/api/lockdown",      lockdownRouter);
 app.use("/api/tenants",       requireRole("superadmin"), tenantsRouter);
 
 app.listen(port, () => console.log(`PrivateNexus backend listening on ${port}`));
