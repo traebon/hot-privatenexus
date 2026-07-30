@@ -136,6 +136,11 @@ const TOOLS = [
       properties: { limit: { type: "number", description: "Max results (default 20)" } },
     },
   },
+  {
+    name: "pn_get_lockdown_status",
+    description: "Get Security Lockdown Mode's current tier (none/alert/soft/hard/full), when/why/by-whom it was activated, and its most recent timeline events. Read-only — deliberately no MCP tool to escalate or clear lockdown; that requires a human via the Lockdown board (Hard requires admin role, Full requires breakglass, the highest role, and MCP sessions are structurally capped at operator).",
+    inputSchema: { type: "object", properties: {} },
+  },
   // ── Write / action tools (v3 — new) ──────────────────────────────────────
   {
     name: "pn_list_signals",
@@ -399,6 +404,23 @@ async function callTool(name, args) {
         [TENANT_ID, Math.min(Number(limit), 50)]
       );
       return { candidates: rows, count: rows.length };
+    }
+
+    case "pn_get_lockdown_status": {
+      const { rows: active } = await pool.query(
+        `SELECT id, tier, activated_at, activated_by, trigger_source, trigger_ref, reason, expires_at
+         FROM lockdown_state WHERE tenant_id=$1 AND cleared_at IS NULL
+         ORDER BY activated_at DESC LIMIT 1`,
+        [TENANT_ID]
+      );
+      const current = active[0] || null;
+      const { rows: recentEvents } = await pool.query(
+        `SELECT le.event_type, le.detail, le.created_at, ls.tier
+         FROM lockdown_events le JOIN lockdown_state ls ON ls.id = le.lockdown_id
+         WHERE ls.tenant_id=$1 ORDER BY le.created_at DESC LIMIT 10`,
+        [TENANT_ID]
+      );
+      return { tier: current?.tier || "none", active: current, recent_events: recentEvents };
     }
 
     // ── v3 write tools ────────────────────────────────────────────────────────
