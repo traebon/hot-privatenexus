@@ -77,6 +77,62 @@ const CONTAINER_ALLOWLIST = new Set([
 export const COOLDOWN_MS = 60_000;
 export const actionCooldowns = new Map(); // containerId → lastActionTs (ms)
 
+// ── Reusable tier-agnostic action helpers ───────────────────────────────────
+// Extracted so PrivateNexus's Lockdown Mode (routes/lockdown.js) can trigger
+// these same, already-audited actions programmatically (system-triggered, no
+// req/session available) instead of duplicating the logic or faking an HTTP
+// call into this router. The /emergency route below calls these too — one
+// implementation, not two copies that can drift.
+
+export async function enableMaintenanceMode({ durationSecs, reason, createdBy }) {
+  const endsAt = new Date(Date.now() + durationSecs * 1000).toISOString();
+  const grafanaSilence = await createMaintenanceSilence({ endsAt, reason, createdBy });
+  if (!grafanaSilence.ok) console.warn("[maintenance] alert suppression unavailable:", grafanaSilence.error);
+  const state = { enabled: true, since: new Date().toISOString(), reason: reason || null, durationSecs, endsAt, grafanaSilence };
+  writeFileSync(MAINTENANCE_FILE, JSON.stringify(state));
+  scheduleMaintenanceExpiry(endsAt);
+  return state;
+}
+
+export function getMaintenanceState() {
+  if (!existsSync(MAINTENANCE_FILE)) return null;
+  try { return JSON.parse(readFileSync(MAINTENANCE_FILE, "utf8")); } catch { return null; }
+}
+
+export async function disableMaintenanceMode() {
+  clearMaintenanceTimer();
+  let priorSilence = null;
+  if (existsSync(MAINTENANCE_FILE)) {
+    try { priorSilence = JSON.parse(readFileSync(MAINTENANCE_FILE, "utf8")).grafanaSilence; } catch {}
+    rmSync(MAINTENANCE_FILE);
+  }
+  let silenceCleared = null;
+  if (priorSilence?.ok && priorSilence.silenceId) {
+    silenceCleared = await deleteMaintenanceSilence(priorSilence.silenceId);
+    if (!silenceCleared.ok) console.warn("[maintenance] failed to clear Grafana silence early:", silenceCleared.error);
+  }
+  return silenceCleared;
+}
+
+export async function stopAllContainers() {
+  const list = await docker.listContainers({ all: false });
+  const results = [];
+  for (const c of list) {
+    const name = (c.Names?.[0] || "").replace(/^\//, "");
+    if (CONTAINER_BLOCKLIST.has(name)) {
+      results.push({ name, ok: false, skipped: true, reason: "blocklisted — not stopped" });
+      continue;
+    }
+    try {
+      await docker.getContainer(c.Id).stop({ t: 10 });
+      results.push({ name, ok: true });
+    } catch (err) {
+      results.push({ name, ok: false, error: err.message });
+    }
+  }
+  return results;
+}
+
 // Docker image reference: registry/namespace/name:tag[@digest]
 // Permits only safe characters — rejects shell metacharacters and control chars.
 const IMAGE_REF_RE = /^[a-z0-9][a-zA-Z0-9._\-/:@]*$/;
@@ -230,21 +286,7 @@ actionsRouter.post("/emergency", requireRole("admin"), async (req, res) => {
 
   try {
     if (action === "stacks.stop-all") {
-      const list = await docker.listContainers({ all: false });
-      const results = [];
-      for (const c of list) {
-        const name = (c.Names?.[0] || "").replace(/^\//, "");
-        if (CONTAINER_BLOCKLIST.has(name)) {
-          results.push({ name, ok: false, skipped: true, reason: "blocklisted — not stopped" });
-          continue;
-        }
-        try {
-          await docker.getContainer(c.Id).stop({ t: 10 });
-          results.push({ name, ok: true });
-        } catch (err) {
-          results.push({ name, ok: false, error: err.message });
-        }
-      }
+      const results = await stopAllContainers();
       const ok = results.every((r) => r.ok);
       recordAudit(req, "emergency.stacks.stop-all", null, ok ? "success" : "failure", { results });
       return res.json({ ok, action, results });
@@ -285,36 +327,19 @@ actionsRouter.post("/emergency", requireRole("admin"), async (req, res) => {
       if (!durationSecs || durationSecs <= 0) {
         return res.status(400).json({ ok: false, error: "Invalid duration — use 1h, 4h, 8h, 24h, or seconds (max 86400)" });
       }
-      const endsAt = new Date(Date.now() + durationSecs * 1000).toISOString();
-
       // Suppress Ntfy/email alerts for the window via a Grafana Alerting
       // silence -- Grafana auto-expires it at endsAt, so "resumes on expiry"
       // needs no PN-side timer of its own. Never lets a Grafana failure
       // block maintenance mode itself -- the display flag and the alert
       // suppression are reported separately so the UI can't imply
       // protection that didn't actually happen.
-      const grafanaSilence = await createMaintenanceSilence({ endsAt, reason, createdBy: req.session?.user?.username });
-      if (!grafanaSilence.ok) console.warn("[maintenance] alert suppression unavailable:", grafanaSilence.error);
-
-      const state = { enabled: true, since: new Date().toISOString(), reason: reason || null, durationSecs, endsAt, grafanaSilence };
-      writeFileSync(MAINTENANCE_FILE, JSON.stringify(state));
-      scheduleMaintenanceExpiry(endsAt);
-      recordAudit(req, "emergency.maintenance.enable", null, "success", { durationSecs, endsAt, alertSuppression: grafanaSilence.ok ? "active" : grafanaSilence.error });
+      const state = await enableMaintenanceMode({ durationSecs, reason, createdBy: req.session?.user?.username });
+      recordAudit(req, "emergency.maintenance.enable", null, "success", { durationSecs, endsAt: state.endsAt, alertSuppression: state.grafanaSilence.ok ? "active" : state.grafanaSilence.error });
       return res.json({ ok: true, action, maintenanceMode: state });
     }
 
     if (action === "maintenance.disable") {
-      clearMaintenanceTimer();
-      let priorSilence = null;
-      if (existsSync(MAINTENANCE_FILE)) {
-        try { priorSilence = JSON.parse(readFileSync(MAINTENANCE_FILE, "utf8")).grafanaSilence; } catch {}
-        rmSync(MAINTENANCE_FILE);
-      }
-      let silenceCleared = null;
-      if (priorSilence?.ok && priorSilence.silenceId) {
-        silenceCleared = await deleteMaintenanceSilence(priorSilence.silenceId);
-        if (!silenceCleared.ok) console.warn("[maintenance] failed to clear Grafana silence early:", silenceCleared.error);
-      }
+      const silenceCleared = await disableMaintenanceMode();
       recordAudit(req, "emergency.maintenance.disable", null, "success", silenceCleared ? { alertSuppressionCleared: silenceCleared.ok } : undefined);
       return res.json({ ok: true, action, maintenanceMode: null });
     }
@@ -386,7 +411,7 @@ function requiredLevel(elevation) {
   return ROLE_LEVEL[elevation] ?? 1;
 }
 
-async function blastRadiusCheck(serviceId, tenantId) {
+export async function blastRadiusCheck(serviceId, tenantId) {
   if (!serviceId) return { count: 0, hard: 0, affected: [] };
   const { rows } = await getPool().query(
     `SELECT sd.dep_type, s.name, s.slug, s.status
@@ -402,7 +427,7 @@ async function blastRadiusCheck(serviceId, tenantId) {
   };
 }
 
-async function getPolicy(actionType) {
+export async function getPolicy(actionType) {
   const { rows } = await getPool().query(
     `SELECT * FROM action_policies WHERE action_type = $1 AND enabled = TRUE LIMIT 1`,
     [actionType]

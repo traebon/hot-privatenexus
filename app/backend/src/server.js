@@ -146,11 +146,13 @@ app.get("/api/health", (_req, res) =>
 app.use("/api/auth", authRouter);
 
 // All remaining /api/* routes require a valid session, except the discovery
-// agent ingest endpoint — it authenticates itself via Bearer token (see
-// routes/discovery.js) so external non-interactive agents can push data
-// without an OIDC session, which is the whole point of that endpoint.
+// agent ingest endpoint and the Wazuh lockdown webhook — both authenticate
+// themselves via Bearer token against agent_tokens (see routes/discovery.js
+// and routes/lockdown.js) so external non-interactive callers can push data
+// without an OIDC session, which is the whole point of both endpoints.
+const BEARER_AUTH_PATHS = new Set(["/discovery/ingest", "/lockdown/webhook/wazuh"]);
 app.use("/api", (req, res, next) => {
-  if (req.method === "POST" && req.path === "/discovery/ingest") return next();
+  if (req.method === "POST" && BEARER_AUTH_PATHS.has(req.path)) return next();
   return requireAuth(req, res, next);
 });
 
